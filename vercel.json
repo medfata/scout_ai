@@ -5,5 +5,13 @@
       "path": "/api/cron/daily",
       "schedule": "0 5 * * *"
     }
-  ]
+  ],
+  "functions": {
+    "app/api/cron/daily/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/webhooks/gmail/route.ts": {
+      "maxDuration": 60
+    }
+  }
 }

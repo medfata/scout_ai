@@ -1,0 +1,75 @@
+{
+  "_fixture_note": "DOCUMENTED-SHAPE EXAMPLE, NOT A RECORDED RESPONSE. Base shape: https://docs.apollo.io/reference/people-api-search (response example for POST /api/v1/mixed_people/api_search, read 2026-09-24). Re-record it with a real APOLLO_API_KEY via spikes/m2-apollo.ts before the adapter is trusted. Note: this endpoint obfuscates last names and returns no email or company domain, which is why the free-plan limitation is an open question.",
+  "total_entries": 4127,
+  "people": [
+    {
+      "id": "66ec0684cd386c0001b15096",
+      "first_name": "Marta",
+      "last_name_obfuscated": "Ko***s",
+      "title": "Head of Customer Support",
+      "last_refreshed_at": "2026-08-30T15:08:56.795+00:00",
+      "has_email": true,
+      "has_city": true,
+      "has_state": false,
+      "has_country": true,
+      "has_direct_phone": "Maybe: please request direct dial via people/bulk_match",
+      "organization": {
+        "name": "Northwind Logistics",
+        "has_industry": true,
+        "has_phone": false,
+        "has_city": true,
+        "has_state": true,
+        "has_country": true,
+        "has_zip_code": false,
+        "has_revenue": false,
+        "has_employee_count": true
+      }
+    },
+    {
+      "id": "6775057df8360a0001a6852c",
+      "first_name": "Tomas",
+      "last_name_obfuscated": "Be***k",
+      "title": "COO",
+      "last_refreshed_at": "2026-08-21T09:12:31.101+00:00",
+      "has_email": true,
+      "has_city": true,
+      "has_state": true,
+      "has_country": true,
+      "has_direct_phone": "Yes",
+      "organization": {
+        "name": "Kestrel Analytics",
+        "has_industry": true,
+        "has_phone": true,
+        "has_city": true,
+        "has_state": true,
+        "has_country": true,
+        "has_zip_code": true,
+        "has_revenue": true,
+        "has_employee_count": true
+      }
+    },
+    {
+      "id": "637dd5071c576c0001ccbff4",
+      "first_name": "Aisha",
+      "last_name_obfuscated": "Ra***n",
+      "title": "Director of Operations",
+      "last_refreshed_at": "2026-08-04T10:01:50.493+00:00",
+      "has_email": false,
+      "has_city": false,
+      "has_state": false,
+      "has_country": true,
+      "has_direct_phone": null,
+      "organization": {
+        "name": "Harborline Freight",
+        "has_industry": true,
+        "has_phone": false,
+        "has_city": false,
+        "has_state": false,
+        "has_country": true,
+        "has_zip_code": false,
+        "has_revenue": false,
+        "has_employee_count": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "_fixture_note": "DOCUMENTED-SHAPE EXAMPLE, NOT A RECORDED RESPONSE. Base shape: Jina Reader API, GET https://r.jina.ai/<url> with `Accept: application/json` (https://jina.ai/reader, read 2026-09-24). Re-record it with a real fetch of a public company page via spikes/m2-jina.ts before the adapter is trusted.",
+  "code": 200,
+  "status": 20000,
+  "data": {
+    "title": "Northwind Logistics — Freight automation for mid-size carriers",
+    "description": "Northwind Logistics builds dispatch and tracking software for European freight carriers.",
+    "url": "https://northwind-logistics.example/",
+    "content": "# Northwind Logistics\n\nNorthwind Logistics builds dispatch and tracking software for European freight carriers. We operate in Germany, Poland and the Netherlands.\n\n## Careers\n\nWe are hiring three support agents and one operations analyst in Berlin.\n\n## Contact\n\nhello@northwind-logistics.example",
+    "publishedTime": null,
+    "usage": {
+      "tokens": 512
+    }
+  }
+}

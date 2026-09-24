@@ -1,0 +1,33 @@
+{
+  "_fixture_note": "DOCUMENTED-SHAPE EXAMPLE, NOT A RECORDED RESPONSE. Base shape: HN Algolia Search API, GET https://hn.algolia.com/api/v1/search_by_date?query=Ask%20HN%3A%20Who%20is%20hiring%3F&tags=story (https://hn.algolia.com/api, read 2026-09-24). Re-record it with a public GET (no key needed) before the HN adapter is trusted.",
+  "hits": [
+    {
+      "objectID": "41000001",
+      "title": "Ask HN: Who is hiring? (September 2026)",
+      "story_text": null,
+      "url": null,
+      "author": "whoishiring",
+      "created_at": "2026-09-01T15:00:45.000Z",
+      "points": 312,
+      "num_comments": 287,
+      "_tags": ["story", "author_whoishiring", "story_41000001"]
+    },
+    {
+      "objectID": "40900002",
+      "title": "Ask HN: Who wants to be hired? (September 2026)",
+      "story_text": null,
+      "url": null,
+      "author": "whoishiring",
+      "created_at": "2026-09-01T15:00:40.000Z",
+      "points": 96,
+      "num_comments": 141,
+      "_tags": ["story", "author_whoishiring", "story_40900002"]
+    }
+  ],
+  "nbHits": 42,
+  "page": 0,
+  "nbPages": 5,
+  "hitsPerPage": 2,
+  "query": "Ask HN: Who is hiring?",
+  "params": "query=Ask+HN%3A+Who+is+hiring%3F&tags=story&hitsPerPage=2"
+}

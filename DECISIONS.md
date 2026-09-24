@@ -122,6 +122,50 @@ morning so the digest is waiting for you.
 
 ---
 
+## Open questions for the owner (answer in a new entry below)
+
+These are places where the plan is silent or where a default had to be chosen to keep
+building. Each one is easy to change; none of them is a locked decision.
+
+**Q1 — Prettier.** Not in section 4, so it is not installed and CI only lint-checks.
+Approve `prettier` (dev-only) if you want deterministic formatting.
+
+**Q2 — Neon driver.** Postgres.js is used for every environment (D5). Approve switching
+production to `@neondatabase/serverless` if you ever hit `too many connections` on Hobby.
+
+**Q3 — Daily cron time.** `vercel.json` runs the daily planner at 05:00 UTC. Confirm the
+hour so the digest is waiting when you wake up.
+
+**Q4 — The "LinkedIn-first variant".** Section 7's table says email step 1 is skipped "No
+valid email (use LinkedIn-first variant)" but never defines that variant's day offsets.
+Scout v1 defines **only** `email_linkedin_v1` (sequence templates are code, section 7) and
+records the missing variant as a question rather than inventing a schedule. LinkedIn
+automation is phase 6, so nothing is blocked today. **Proposed default:** same steps as
+`email_linkedin_v1`, with the email steps removed until a valid address is found, and
+LinkedIn steps at day 0 (invite) and accept+1 business day (message).
+
+**Q5 — Thresholds the plan leaves open.** Chosen defaults, all in code where you can read
+them: tier cutoffs A ≥ 80 / B ≥ 60 / C ≥ 40 and disqualify below 40
+(`src/domain/scoring.ts`); the pre-score research gate at 50 and the enrichment gate at 60
+(section 6 fixes 60, the 50 is a starting value); the banned-phrase list and opt-out
+phrases in `src/domain/copy-rules.ts`; an out-of-office reply with no stated return date
+reschedules 3 days out (`src/domain/enrollment.ts`, `OOO_DEFAULT_DAYS`).
+
+**Q6 — "Never-contact" from the approval inbox.** The plan's inbox actions are "Review,
+edit, approve, skip, never-contact". `X` adds the contact's email, email domain and
+LinkedIn URL to `suppressions` and stops any live enrollment. Confirm that domain-level
+suppression (blocking the whole company) is what you want from that key.
+
+**Q7 — Digest delivery.** Section 4 says "daily digest by email" and section 3 calls it the
+"morning digest". v1 sends it to the owner through the Telegram bot and the sending
+mailbox; confirm you want both, or Telegram only.
+
+**Q8 — Disconnecting an account.** Not in the plan. The connected-accounts page can show a
+broken mailbox and offer Reconnect, but has no Disconnect button. Say the word if you want
+one.
+
+---
+
 ## Owner tasks still open (from section 11)
 
 Tracked here so the plan and the repo agree. None of these block local development.

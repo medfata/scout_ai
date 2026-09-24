@@ -1,0 +1,167 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * Scout's design tokens (section 4: Tailwind CSS + shadcn/ui).
+ *
+ * The palette is a cool graphite console with one "signal" green, because this
+ * is a private instrument the owner reads every day, not a marketing page.
+ * Dark mode is class-based (`.dark` on <html>), applied before paint by the
+ * inline script in `app/layout.tsx` and toggled from the sidebar.
+ */
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.5rem;
+  --background: oklch(0.983 0.003 255);
+  --foreground: oklch(0.17 0.012 258);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.17 0.012 258);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.17 0.012 258);
+  --primary: oklch(0.5 0.135 155);
+  --primary-foreground: oklch(0.99 0.01 150);
+  --secondary: oklch(0.955 0.004 255);
+  --secondary-foreground: oklch(0.24 0.012 258);
+  --muted: oklch(0.955 0.004 255);
+  --muted-foreground: oklch(0.5 0.012 258);
+  --accent: oklch(0.95 0.022 155);
+  --accent-foreground: oklch(0.32 0.08 155);
+  --destructive: oklch(0.577 0.245 27.3);
+  --border: oklch(0.9 0.005 255);
+  --input: oklch(0.89 0.006 255);
+  --ring: oklch(0.5 0.135 155);
+  --chart-1: oklch(0.62 0.17 155);
+  --chart-2: oklch(0.58 0.12 225);
+  --chart-3: oklch(0.72 0.15 80);
+  --chart-4: oklch(0.56 0.11 300);
+  --chart-5: oklch(0.63 0.15 28);
+  --sidebar: oklch(0.962 0.004 255);
+  --sidebar-foreground: oklch(0.2 0.012 258);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: oklch(0.93 0.01 155);
+  --sidebar-accent-foreground: oklch(0.3 0.075 155);
+  --sidebar-border: oklch(0.9 0.005 255);
+  --sidebar-ring: var(--ring);
+}
+
+.dark {
+  --background: oklch(0.155 0.008 258);
+  --foreground: oklch(0.93 0.005 250);
+  --card: oklch(0.19 0.009 258);
+  --card-foreground: oklch(0.93 0.005 250);
+  --popover: oklch(0.205 0.009 258);
+  --popover-foreground: oklch(0.93 0.005 250);
+  --primary: oklch(0.82 0.185 150);
+  --primary-foreground: oklch(0.18 0.045 150);
+  --secondary: oklch(0.252 0.008 258);
+  --secondary-foreground: oklch(0.93 0.005 250);
+  --muted: oklch(0.238 0.008 258);
+  --muted-foreground: oklch(0.68 0.012 252);
+  --accent: oklch(0.27 0.035 152);
+  --accent-foreground: oklch(0.88 0.12 150);
+  --destructive: oklch(0.66 0.2 25);
+  --border: oklch(0.275 0.01 258);
+  --input: oklch(0.3 0.012 258);
+  --ring: oklch(0.72 0.15 150);
+  --chart-1: oklch(0.78 0.19 150);
+  --chart-2: oklch(0.7 0.13 225);
+  --chart-3: oklch(0.8 0.15 80);
+  --chart-4: oklch(0.7 0.12 300);
+  --chart-5: oklch(0.72 0.16 30);
+  --sidebar: oklch(0.138 0.008 258);
+  --sidebar-foreground: oklch(0.9 0.006 250);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: oklch(0.245 0.03 152);
+  --sidebar-accent-foreground: oklch(0.87 0.12 150);
+  --sidebar-border: oklch(0.24 0.01 258);
+  --sidebar-ring: var(--ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply font-sans;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--primary) 28%, transparent);
+  }
+
+  /* Thin, quiet scrollbars; this app is dense and scrolls constantly. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 30%, transparent) transparent;
+  }
+}
+
+@layer components {
+  /*
+   * Faint instrument-grid backdrop for the shell and the sign-in screen.
+   * Drawn from the border token so it adapts to both themes.
+   */
+  .surface-grid {
+    background-image:
+      linear-gradient(to right, color-mix(in oklab, var(--border) 45%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in oklab, var(--border) 45%, transparent) 1px, transparent 1px);
+    background-size: 2rem 2rem;
+    background-position: -1px -1px;
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black, transparent 75%);
+  }
+
+  /* Letterspaced micro-label used across the console (sidebar section titles, table headers). */
+  .micro-label {
+    @apply font-mono text-[0.6875rem] font-medium uppercase tracking-[0.14em];
+  }
+}

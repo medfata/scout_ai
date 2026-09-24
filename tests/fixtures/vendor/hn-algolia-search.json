@@ -1,0 +1,31 @@
+{
+  "_fixture_note": "DOCUMENTED-SHAPE EXAMPLE, NOT A RECORDED RESPONSE. Base shape: HN Algolia Search API, GET https://hn.algolia.com/api/v1/search?query=<q>&tags=comment,story_<id> (https://hn.algolia.com/api, read 2026-09-24). Re-record it with a public GET before the HN adapter is trusted.",
+  "hits": [
+    {
+      "objectID": "41234567",
+      "author": "nwfounder",
+      "created_at": "2026-09-02T14:03:00.000Z",
+      "story_id": 41000001,
+      "comment_text": "Northwind Logistics | Senior Support Automation Engineer | Berlin or Remote (EU) | Full-time<p>We run dispatch for 400 carriers and our support queue is drowning in repetitive status emails. Hiring to automate it. https:&#x2F;&#x2F;northwind-logistics.example&#x2F;careers",
+      "story_title": "Ask HN: Who is hiring? (September 2026)",
+      "story_url": null,
+      "_tags": ["comment", "author_nwfounder", "story_41000001"]
+    },
+    {
+      "objectID": "41234568",
+      "author": "opsguy",
+      "created_at": "2026-09-02T16:41:22.000Z",
+      "story_id": 41000001,
+      "comment_text": "Kestrel Analytics | Head of Operations | Remote | We need someone to own reporting and cut manual work.",
+      "story_title": "Ask HN: Who is hiring? (September 2026)",
+      "story_url": null,
+      "_tags": ["comment", "author_opsguy", "story_41000001"]
+    }
+  ],
+  "nbHits": 2,
+  "page": 0,
+  "nbPages": 1,
+  "hitsPerPage": 10,
+  "query": "support automation",
+  "params": "query=support+automation&tags=comment%2Cstory_41000001&hitsPerPage=10"
+}

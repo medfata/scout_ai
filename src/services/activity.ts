@@ -28,6 +28,7 @@ export type ActivityType =
   | "icp.updated"
   | "icp.approved"
   | "icp.paused"
+  | "icp.archived"
   // Sourcing
   | "sourcing.started"
   | "sourcing.finished"

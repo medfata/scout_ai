@@ -21,6 +21,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# workflow SDK local world
+/.workflow-data/
+/.workflow-vitest/
+
 # env files (values never committed, only .env.example)
 .env
 .env.local
@@ -47,3 +51,4 @@ evals/output/
 
 # spikes (local only, recorded fixtures live in tests/fixtures)
 /spikes/local
+/.swc

@@ -126,7 +126,7 @@ export async function markAccountWarmupStart(accountId: string): Promise<void> {
     .where(eq(connectedAccounts.id, accountId));
 }
 
-export async function readAccountCredentials<T extends Record<string, unknown>>(account: ConnectedAccount): Promise<T | null> {
+export async function readAccountCredentials<T>(account: ConnectedAccount): Promise<T | null> {
   if (!account.credentialsEncrypted) return null;
   try {
     return JSON.parse(decryptSecret(account.credentialsEncrypted)) as T;

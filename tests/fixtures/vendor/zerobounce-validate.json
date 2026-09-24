@@ -1,0 +1,23 @@
+{
+  "_fixture_note": "DOCUMENTED-SHAPE EXAMPLE, NOT A RECORDED RESPONSE. Base shape: ZeroBounce v2 Single Email Validator, GET https://api.zerobounce.net/v2/validate?api_key=&email= (https://www.zerobounce.net/docs/email-validation-api-quickstart/v2-validate-emails, read 2026-09-24). Re-record it with a real ZEROBOUNCE_API_KEY via spikes/m2-zerobounce.ts before the adapter is trusted.",
+  "address": "tomas.becker@kestrel-analytics.example",
+  "status": "valid",
+  "sub_status": "",
+  "free_email": false,
+  "did_you_mean": null,
+  "account": "tomas.becker",
+  "domain": "kestrel-analytics.example",
+  "domain_age_days": "4821",
+  "smtp_provider": "kestrel-analytics.example",
+  "mx_found": "true",
+  "mx_record": "mx1.kestrel-analytics.example",
+  "firstname": "Tomas",
+  "lastname": "Becker",
+  "gender": "male",
+  "country": "Germany",
+  "region": "Berlin",
+  "city": "Berlin",
+  "zipcode": "10115",
+  "processed_at": "2026-09-01 12:00:00.000",
+  "ip_address": "127.0.0.1"
+}

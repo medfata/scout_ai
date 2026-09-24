@@ -20,6 +20,9 @@
     "db:migrate": "drizzle-kit migrate",
     "db:check": "drizzle-kit check",
     "db:studio": "drizzle-kit studio",
+    "db:seed:owner": "tsx scripts/seed-owner.ts",
+    "workflow:web": "workflow web",
+    "workflow:runs": "workflow inspect runs",
     "evals": "promptfoo eval -c evals/promptfooconfig.yaml",
     "spike": "tsx"
   },

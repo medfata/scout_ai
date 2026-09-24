@@ -1,0 +1,37 @@
+{
+  "_fixture_note": "DOCUMENTED-SHAPE EXAMPLE, NOT A RECORDED RESPONSE. Base shape: https://docs.exa.ai/reference/search (200 example for POST https://api.exa.ai/search, read 2026-09-24) plus the people/company profile fields Exa returns for profile pages. Re-record it with a real EXA_API_KEY via spikes/m2-exa.ts before the adapter is trusted.",
+  "requestId": "b5947044c4b78efa9552a7c89b306d95",
+  "resolvedSearchType": "auto",
+  "results": [
+    {
+      "id": "https://www.linkedin.com/in/marta-kowalska-support",
+      "title": "Marta Kowalska - Head of Customer Support at Northwind Logistics | LinkedIn",
+      "url": "https://www.linkedin.com/in/marta-kowalska-support",
+      "publishedDate": "2026-05-12T00:00:00.000Z",
+      "author": "Marta Kowalska",
+      "favicon": "https://www.linkedin.com/favicon.ico"
+    },
+    {
+      "id": "https://kestrel-analytics.example/about/team",
+      "title": "Kestrel Analytics — Meet the team",
+      "url": "https://kestrel-analytics.example/about/team",
+      "publishedDate": "2026-07-02T00:00:00.000Z",
+      "author": "Kestrel Analytics",
+      "favicon": "https://kestrel-analytics.example/favicon.ico"
+    },
+    {
+      "id": "https://www.linkedin.com/in/tomas-becker-coo",
+      "title": "Tomas Becker | LinkedIn",
+      "url": "https://www.linkedin.com/in/tomas-becker-coo",
+      "publishedDate": null,
+      "author": "Tomas Becker",
+      "favicon": "https://www.linkedin.com/favicon.ico"
+    }
+  ],
+  "costDollars": {
+    "total": 0.007,
+    "search": {
+      "neural": 0.007
+    }
+  }
+}
