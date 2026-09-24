@@ -10,7 +10,7 @@ import {
 import type { ChannelKind } from "@/src/domain/types";
 import { getChannel } from "@/src/adapters/channels";
 import { getEnv } from "@/src/lib/env";
-import { SendGuardError, type SendGuardRule } from "@/src/lib/errors";
+import { ScoutError, SendGuardError, type SendGuardRule } from "@/src/lib/errors";
 import { idempotencyKey } from "@/src/lib/ids";
 import { logger } from "@/src/lib/logger";
 import { dateOnlyInZone, isWithinWindow, nextWindowStart } from "@/src/lib/time-windows";
@@ -208,9 +208,14 @@ export async function sendMessage(input: SendMessageInput): Promise<SendOutcome>
     return { status: "sent", messageId: message.id, providerMessageId: result.providerMessageId, redirected: result.redirected };
   } catch (error) {
     const detail = error instanceof Error ? error.message : "unknown provider error";
-    logger.error("send.failed", { enrollmentId: input.enrollmentId, step: input.step, reason: detail });
+    const retryable = error instanceof ScoutError && error.retryable;
+    logger.error("send.failed", { enrollmentId: input.enrollmentId, step: input.step, reason: detail, retryable });
     await markMessageFailed(message.id, detail);
     if (gate.consumed) await gate.consumed();
+    // A retryable provider failure (429, 5xx) goes back to `approved` so the next run can
+    // try again without a double send: the idempotency key is unchanged and the message
+    // was never accepted by the provider. Anything else stays `failed` for the owner.
+    if (retryable) await releaseMessage(message.id);
     return { status: "failed", messageId: message.id, error: detail };
   }
 }

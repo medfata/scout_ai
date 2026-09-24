@@ -18,6 +18,7 @@ const config = [
       "test-results/**",
       "drizzle/**",
       "evals/**",
+      "app/.well-known/**",
       "next-env.d.ts",
     ],
   },

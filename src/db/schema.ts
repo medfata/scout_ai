@@ -289,7 +289,12 @@ export const messages = pgTable(
     sentAt: now("sent_at"),
     receivedAt: now("received_at"),
     intent: text("intent").$type<ReplyIntent>(),
-    intentData: jsonb("intent_data").$type<{ returnDate?: string; followUpAfter?: string; referral?: ReferralDetails }>(),
+    intentData: jsonb("intent_data").$type<{
+    summary?: string;
+    returnDate?: string;
+    followUpAfter?: string;
+    referral?: ReferralDetails;
+  }>(),
     /** Set when an LLM output failed schema validation twice (section 10 rule 5). */
     needsOwner: boolean("needs_owner").default(false).notNull(),
     model: text("model"),

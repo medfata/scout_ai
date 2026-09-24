@@ -38,6 +38,8 @@ export interface SourcingSummary {
   suppressed: number;
   disqualified: number;
   sources: string[];
+  /** Contacts this run created, so a caller can start the research pipeline for them. */
+  createdContacts: Array<{ contactId: string; companyId: string | null }>;
 }
 
 export interface SourceLeadsInput {
@@ -212,6 +214,7 @@ async function runSourcing(row: { icp: Icp; offer: Offer }, sources: LeadSource[
   // through `upsertCompany` / `upsertContact`, so a re-run adds zero rows.
   let created = 0;
   let deduped = 0;
+  const createdContacts: Array<{ contactId: string; companyId: string | null }> = [];
 
   for (const candidate of eligible) {
     if (created >= effectiveLimit) break;
@@ -226,8 +229,14 @@ async function runSourcing(row: { icp: Icp; offer: Offer }, sources: LeadSource[
       source: candidate.source,
     });
 
-    if (contact.created) created += 1;
-    else deduped += 1;
+    if (contact.created) {
+      created += 1;
+      // The daily planner needs the new contact ids to start research and drafting for
+      // exactly the leads this run created (section 3: "source, research, draft").
+      createdContacts.push({ contactId: contact.id, companyId });
+    } else {
+      deduped += 1;
+    }
   }
 
   const summary: SourcingSummary = {
@@ -240,6 +249,7 @@ async function runSourcing(row: { icp: Icp; offer: Offer }, sources: LeadSource[
     suppressed,
     disqualified,
     sources: [...usedSources],
+    createdContacts,
   };
 
   await recordActivity({

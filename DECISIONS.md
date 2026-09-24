@@ -166,6 +166,39 @@ one.
 
 ---
 
+## Build state (2026-09-24, end of the parallel build pass)
+
+Verified on this commit: `pnpm typecheck`, `pnpm lint`, `pnpm test` (94 tests) and
+`pnpm build` all pass.
+
+| Phase | State | Notes |
+| --- | --- | --- |
+| 0. Foundations | **Built** | Vercel deploy and the first CI run are owner actions (D8). |
+| 1. Offer and ICP studio | **Built** | Needs `AI_GATEWAY_API_KEY` to generate. `evals/` (promptfoo) is still empty. |
+| 2. Sourcing and enrichment | **Built** | Adapters follow documented vendor shapes; run `spikes/*.ts` with a real key to record fixtures before trusting them (D9). |
+| 3. Research, drafting, approval | **Built** | Inbox shortcuts: `J`/`K` move, `A` approve, `S` skip, `E` edit, `X` never-contact. |
+| 4. Email sending | **Built** | Guard tests exist per rule; the Gmail path needs the OAuth app (owner task). |
+| 5. Sequences and replies | **Built, tests missing** | Sequencer, reply classifier, OOO/not-now handling, Gmail push ingest, Cal.com webhook and the daily planner exist. **The time-travel tests section 11 requires are not written yet** — that is the one phase-5 gate still open. |
+| 6. LinkedIn | Not built | `manual-linkedin` returns `null` by design; LinkedIn steps report `linkedin_not_available` instead of silently disappearing (Q4). |
+| 7. Analytics and learning | Not built | The daily planner splits the budget evenly across approved ICPs, with a comment marking where the allocator goes. |
+| 8. Hardening | Not built | Circuit breakers, retention, export/delete job, load test. |
+
+**Also still open:**
+
+- `/dashboard`, `/replies` and `/settings` are linked from the navigation but the pages do
+  not exist yet, so those links 404. The connected-accounts page under
+  `/settings/connected-accounts` is built.
+- `evals/` is empty: no promptfoo golden set yet.
+- No Playwright end-to-end test.
+
+**D9 — vendor fixtures are shapes, not recordings.** Section 10 rule 2 says to spike a real
+endpoint and commit the recorded response. No vendor keys exist in this environment, so
+`tests/fixtures/vendor/*.json` are documented-shape examples and `spikes/*.ts` are ready to
+record the real ones. Run each spike with its key and replace the fixture before trusting an
+adapter against production.
+
+---
+
 ## Owner tasks still open (from section 11)
 
 Tracked here so the plan and the repo agree. None of these block local development.
