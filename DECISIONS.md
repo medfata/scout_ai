@@ -202,6 +202,32 @@ approved weeks later against a brief that has gone cold. Options: (a) expire aft
 let the daily planner re-draft from fresh research; (b) keep drafts indefinitely and show their
 age in the inbox; (c) expire after a longer window (7 or 14 days). **Proposed default: (a).**
 
+**Q15 - Preview auth for the demo (review stage 1, item 5).** A Google **Internal** consent
+screen only admits accounts inside that Workspace. If `ADMIN_EMAIL` is outside it, app sign-in
+needs its own **External (testing)** OAuth client (with `ADMIN_EMAIL` as a test user), while
+the Gmail client stays Internal. Confirm which situation applies to you — it changes what you
+create in Google Cloud, and the checklist at `docs/first-send-checklist.md` section 3 now
+covers both.
+
+---
+
+## Eval bar (review stage 1b)
+
+`pnpm eval` runs the promptfoo suite in `evals/`. It needs `AI_GATEWAY_API_KEY` and
+`MODEL_COPY`, so **it is not in CI** — a green CI run never proves prompt quality.
+
+**Pass bar:** every code assertion passes (word limits 110/70/300 chars, claim grounding,
+no link in email 1 outside the signature, opt-out present, banned phrases absent, one question
+CTA, Zod parse), and the reply classifier agrees with the labelled set on **≥ 90%** of 34
+replies across all 11 intents.
+
+Only one rubric is model-graded — "exactly one concrete idea tied to a signal" — because it is
+the one thing code cannot check.
+
+**First run results: not yet recorded.** The owner runs it once the gateway key is in place;
+the results go here. Until then, phase 3's gate is unmet and the copy path is unproven against
+a real model.
+
 ---
 
 ## D10 - D1 was not an owner decision, and gates now go in order (2026-09-25)
@@ -264,27 +290,31 @@ env validation instead.
 
 ---
 
-## Build state (2026-09-25, after the test stage)
+## Build state (2026-09-26, after the test and eval stages)
 
-Verified on this commit: `pnpm typecheck`, `pnpm lint`, `pnpm test` (**187 passed**) and
-`pnpm test:workflows` (**15 passed**) — both against a real `postgres:17`, both also green in
-CI — plus a production build.
+Verified on this commit: `pnpm typecheck`, `pnpm lint`, `pnpm test` (**193 passed**) and
+`pnpm test:workflows` (**21 passed**) — both against a real `postgres:17` — plus a production
+build.
 
 | Phase | Code | Gate |
 | --- | --- | --- |
 | 0. Foundations | Built | ✅ migrations run in CI. ⛔ Vercel deploy is an owner action. |
-| 1. Offer and ICP studio | Built | ⛔ `evals/` empty — no promptfoo golden set. |
-| 2. Sourcing and enrichment | Built | ⛔ fixtures are documented shapes, not recordings (D9). |
-| 3. Research, drafting, approval | Built | ⛔ same promptfoo gap. |
+| 1. Offer and ICP studio | Built | ⛔ eval suite exists but has never been run against a real model. |
+| 2. Sourcing and enrichment | Built | ⛔ fixtures are documented shapes, not recordings (D9); no "find 25 leads" run yet. |
+| 3. Research, drafting, approval | Built | ⛔ **not met**: `evals/` is built and self-tested, but the golden set has not been run against a real model, and no `scripts/gate3-run.ts` run is recorded. Both need the owner's gateway key. |
 | 4. Email sending | Built | ✅ **met in code** — every guard rule has a test named after it, and every failure mode the review listed is covered. ⛔ **the preview demonstration is still outstanding**: it needs the owner (section C). |
 | 5. Sequences and replies | Built | ✅ **met** — all nine time-travel scenarios pass, twice consecutively. |
-| 6. LinkedIn | Not built | Out of scope. |
+| 6. LinkedIn | Not built | **Blocked on the owner**: gate 4's preview demo recorded, and Q4 answered. |
 | 7. Analytics and learning | Not built | Out of scope. |
 | 8. Hardening | Not built | Out of scope. |
 
-**Test suite as it stands:** 187 unit/domain/service tests (51 pure domain, 40 guard, plus
-adapters, agents and services) and 15 workflow time-travel tests. Both suites skip cleanly
-without a database rather than failing, so a laptop without Docker still gets a useful run.
+**Test suite:** 193 unit/domain/service tests and 21 workflow time-travel tests. Both fail
+loudly in CI when the database is unreachable, and skip cleanly locally.
+
+**Eval suite:** `evals/` with 25 golden leads and 34 labelled replies. **It has already earned
+its keep**: it found that `DEFAULT_OPT_OUT_LINE` matched no entry in `OPT_OUT_PHRASES`, so every
+draft that followed the copy prompt would have failed `missing_opt_out`. Fixed before a single
+model call was paid for.
 
 **Still outstanding for gate 4:** the three preview demonstrations in
 `docs/first-send-checklist.md` section 6, recorded below once they happen.

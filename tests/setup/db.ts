@@ -10,8 +10,12 @@ import { logger } from "@/src/lib/logger";
  *
  * Service tests run against the real Postgres `DATABASE_URL` points at — the same
  * `postgres:17` service CI provides — with the committed Drizzle migrations applied.
- * They skip cleanly when no database is reachable, so `pnpm test` still works on a
- * laptop with no Postgres (`describe.skipIf(!(await hasDatabase()))`).
+ * Locally they skip cleanly when no database is reachable, so `pnpm test` still works
+ * on a laptop with no Postgres (`describe.skipIf(!(await hasDatabase()))`).
+ *
+ * In CI (`process.env.CI` is set) an unreachable database is a hard failure instead. A
+ * CI run that skipped every database-backed suite would go green having tested nothing,
+ * which is exactly the misconfiguration those suites exist to catch.
  *
  * The Better Auth tables (`user`, `session`, `account`, `verification`) are never
  * truncated: they are framework-owned and a test must not wipe a developer's session.
@@ -44,10 +48,27 @@ const DOMAIN_TABLES = [
 
 let readiness: Promise<boolean> | null = null;
 
+/** GitHub Actions and every common CI provider set `CI`; a local run normally leaves it unset. */
+function inCi(): boolean {
+  return Boolean(process.env.CI);
+}
+
+/** Driver error name and socket code only — never the connection string or an error body. */
+function failureDetails(error: unknown): { reason: string; code?: string } {
+  return {
+    reason: error instanceof Error ? error.name : "unknown",
+    code:
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : undefined,
+  };
+}
+
 /**
  * Connects once, applies the committed migrations, and reports whether the database is
  * usable. A failure is remembered (the pool is closed) so every DB-backed suite skips
- * instead of trying to reconnect on every collection.
+ * instead of trying to reconnect on every collection. When `CI` is set the failure is
+ * thrown instead of returned, so a misconfigured CI database fails the run loudly.
  */
 async function connectAndMigrate(): Promise<boolean> {
   try {
@@ -55,18 +76,33 @@ async function connectAndMigrate(): Promise<boolean> {
     await migrate(getDb(), { migrationsFolder: MIGRATIONS_FOLDER });
     return true;
   } catch (error) {
+    const { reason, code } = failureDetails(error);
+    if (inCi()) {
+      logger.error("tests.database_unavailable_in_ci", { reason, code });
+      await closeDb().catch(() => {});
+      throw new Error(
+        [
+          `tests: CI is set but DATABASE_URL is unreachable (${reason}${code ? ` [${code}]` : ""}).`,
+          "The database-backed suites fail instead of skipping here: in CI a skip would turn",
+          "a broken database configuration into a green run that tested nothing.",
+          "Check that the Postgres service is running and that DATABASE_URL points at it",
+          "(see .github/workflows/ci.yml). Locally, run `docker compose up -d` and set",
+          "DATABASE_URL=postgres://scout:scout@localhost:55432/scout_test — or leave CI unset to skip.",
+        ].join(" "),
+      );
+    }
     // Never log the connection string or a driver error body (rule 11); the error name
     // and socket code are enough to tell "no server" from "bad credentials" while debugging.
-    logger.warn("tests.database_unavailable", {
-      reason: error instanceof Error ? error.name : "unknown",
-      code: error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : undefined,
-    });
+    logger.warn("tests.database_unavailable", { reason, code });
     await closeDb().catch(() => {});
     return false;
   }
 }
 
-/** True when `DATABASE_URL` is reachable and the migrations are applied. Cached. */
+/**
+ * True when `DATABASE_URL` is reachable and the migrations are applied. Cached per
+ * process. Throws when `CI` is set and the database is unusable (see `connectAndMigrate`).
+ */
 export function hasDatabase(): Promise<boolean> {
   readiness ??= connectAndMigrate();
   return readiness;

@@ -741,6 +741,85 @@ describe.skipIf(!databaseAvailable)("sendMessage guard and failure handling", ()
       expect((await readNextSendAt(seeded))?.getTime()).toBe(queuedAt.getTime());
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Review item 1: stale pacing slots (owned block; the rest of this file is not)
+  // -------------------------------------------------------------------------
+
+  describe("stale pacing slots (review item 1)", () => {
+    const MINUTE = 60 * 1000;
+
+    async function setSlot(seeded: Outreach, slotAt: Date | null): Promise<void> {
+      await getDb().update(messages).set({ scheduledFor: slotAt }).where(eq(messages.id, seeded.message.id));
+    }
+
+    async function queueMailbox(seeded: Outreach, slotAt: Date | null): Promise<void> {
+      await getDb()
+        .update(connectedAccounts)
+        .set({ nextSendAt: slotAt })
+        .where(eq(connectedAccounts.id, requireAccount(seeded).id));
+    }
+
+    it("re-reserves when the message's owned slot is older than the maximum spacing", async () => {
+      const seeded = await seedOutreach();
+      const stale = new Date(Date.now() - 30 * MINUTE);
+      await setSlot(seeded, stale);
+      // A busy mailbox queue, so the re-reservation is observable as a new future slot.
+      const queuedAt = new Date(Date.now() + 20 * MINUTE);
+      await queueMailbox(seeded, queuedAt);
+
+      const outcome = blocked(await sendStep(seeded.enrollment.id, 0), "pacing");
+
+      const stored = await getMessage(seeded.message.id);
+      expect(stored?.scheduledFor?.getTime()).toBe(queuedAt.getTime());
+      expect(stored?.scheduledFor?.getTime()).toBe(outcome.nextAt?.getTime());
+      expect(stored?.scheduledFor?.getTime()).toBeGreaterThan(stale.getTime());
+      expect(fake.sendCalls).toHaveLength(0);
+    });
+
+    it("honours a fresh future slot instead of reserving another", async () => {
+      const seeded = await seedOutreach();
+      const slot = new Date(Date.now() + 20 * MINUTE);
+      await setSlot(seeded, slot);
+      // With a free mailbox queue, a re-reservation would return `now` and send at once.
+      await queueMailbox(seeded, null);
+
+      const outcome = blocked(await sendStep(seeded.enrollment.id, 0), "pacing");
+
+      expect(outcome.nextAt?.getTime()).toBe(slot.getTime());
+      expect((await getMessage(seeded.message.id))?.scheduledFor?.getTime()).toBe(slot.getTime());
+      expect(fake.sendCalls).toHaveLength(0);
+    });
+
+    it("clears the slot when the sending window blocks the send", async () => {
+      const now = new Date();
+      const later = testSendingWindow(now, 2);
+      const seeded = await seedOutreach({ settings: { sendingWindows: { email: later, linkedin: later } } });
+      await setSlot(seeded, new Date(Date.now() + 20 * MINUTE));
+
+      blocked(await sendStep(seeded.enrollment.id, 0), "sending_window");
+
+      expect((await getMessage(seeded.message.id))?.scheduledFor).toBeNull();
+    });
+
+    it("clears the slot when the daily cap blocks the send", async () => {
+      const seeded = await seedOutreach({ account: { warmupStage: 1 }, counters: { new: 5, total: 5 } });
+      await setSlot(seeded, new Date(Date.now() + 20 * MINUTE));
+
+      blocked(await sendStep(seeded.enrollment.id, 0), "daily_cap");
+
+      expect((await getMessage(seeded.message.id))?.scheduledFor).toBeNull();
+    });
+
+    it("clears the slot when a park blocks the send before the message is read", async () => {
+      const seeded = await seedOutreach({ settings: { killSwitch: true } });
+      await setSlot(seeded, new Date(Date.now() + 20 * MINUTE));
+
+      blocked(await sendStep(seeded.enrollment.id, 0), "kill_switch");
+
+      expect((await getMessage(seeded.message.id))?.scheduledFor).toBeNull();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

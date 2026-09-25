@@ -1,0 +1,16 @@
+description: "No-key smoke test for the eval harness (no AI_GATEWAY_API_KEY needed). Proves TS providers, TS file:// assertions, vars and metadata plumbing."
+
+prompts:
+  - "scout-evals-smoke"
+
+providers:
+  - id: file://./fake-provider.ts
+    label: smoke-fake
+
+tests:
+  - description: "provider metadata reaches a TypeScript file:// assertion"
+    vars:
+      smokeId: smoke-1
+    assert:
+      - type: javascript
+        value: file://./check-metadata.ts

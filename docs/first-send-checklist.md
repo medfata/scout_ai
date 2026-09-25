@@ -14,7 +14,16 @@ Reference: `AGENTS.md` sections 8 (accounts and secrets), 9 (deliverability) and
 - [ ] Neon Postgres (free plan) added from the Vercel Marketplace; `DATABASE_URL` copied from
       the **pooled** endpoint (the host contains `-pooler`; Scout disables prepared statements
       automatically when it does).
-- [ ] Preview deployments have **Deployment Protection** on, and `DRY_RUN=true`.
+- [ ] Preview deployments have **Deployment Protection** on with **Protection Bypass for
+      Automation** enabled, and `DRY_RUN=true`. Keep the bypass secret: Deployment Protection
+      rejects requests without a Vercel session, including Google's Pub/Sub push, so the push
+      URL in section 3 carries it.
+- [ ] Preview branch has a **stable alias** (Vercel → Domains → branch alias, e.g.
+      `scout-preview.vercel.app`), used as Preview `APP_URL`. OAuth redirect URIs are
+      registered against that alias once; a per-deploy `*.vercel.app` URL changes every push.
+- [ ] Expect **no crons on preview**: Vercel runs cron jobs in Production only, so watch
+      renewal and the reconcile step stay idle on preview. That is fine for the demo — just do
+      not read a quiet preview as proof those jobs work.
 
 ## 2. Environment variables
 
@@ -42,15 +51,22 @@ do-not-contact list (D11) — decide Q12 before you ever rotate it.
 
 - [ ] One Google Cloud project. **Internal** OAuth consent screen on the sending Workspace
       domain, so no verification review is needed.
-- [ ] OAuth client (Web application) with redirect URIs:
-      `https://<app>/api/oauth/gmail/callback` and `https://<app>/api/auth/callback/google`.
+- [ ] If `ADMIN_EMAIL` is **outside** that Workspace, an Internal screen cannot admit it: app
+      sign-in needs its own OAuth client with an **External** consent screen in **testing**
+      mode, `ADMIN_EMAIL` added as a test user (Q15 in `DECISIONS.md`). The Gmail client stays
+      Internal either way.
+- [ ] OAuth client(s) (Web application) with redirect URIs on the **stable** preview alias
+      (section 1) and the production URL: `https://<app>/api/oauth/gmail/callback` and
+      `https://<app>/api/auth/callback/google`.
 - [ ] APIs enabled: **Gmail API**, **Cloud Pub/Sub**.
 - [ ] Scopes requested by Scout: `gmail.send` and `gmail.readonly` only.
 - [ ] `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` for app sign-in.
 - [ ] `GMAIL_OAUTH_CLIENT_ID` / `GMAIL_OAUTH_CLIENT_SECRET` for the mailbox (may be the same
       client, but keep them separate so rotating one does not break the other).
 - [ ] Pub/Sub topic (e.g. `scout-gmail-push`) and a **push subscription** whose endpoint is
-      `https://<app>/api/webhooks/gmail?token=<GMAIL_PUSH_SECRET>`.
+      `https://<app>/api/webhooks/gmail?token=<GMAIL_PUSH_SECRET>&x-vercel-protection-bypass=<secret>`
+      where `<secret>` is the Protection Bypass for Automation value from section 1. Without
+      it, Deployment Protection turns Google's push away and new replies never reach Scout.
 - [ ] Grant the Gmail service account publish rights on the topic
       (`gmail-api-push@system.gserviceaccount.com` → Pub/Sub Publisher).
 - [ ] `GMAIL_PUBSUB_TOPIC` = `projects/<project>/topics/<topic>` and `GMAIL_PUSH_SECRET` set.

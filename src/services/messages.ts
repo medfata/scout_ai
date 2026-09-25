@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 
 import { getDb } from "@/src/db/client";
 import { contacts, enrollments, messages, type Message } from "@/src/db/schema";
@@ -173,13 +173,22 @@ export interface MarkSentInput {
  * owns. The conditional update makes the first writer win: a retried or racing attempt on
  * the same message waits for the stored slot instead of consuming a second one from the
  * mailbox's queue.
+ *
+ * Review item 1: the same update overwrites a slot that has expired (`scheduled_for`
+ * earlier than `expiredBefore`), so a message that missed its place in the queue while it
+ * was blocked takes a fresh one instead of keeping a slot nobody can honour.
  */
-export async function storeMessageSendSlot(messageId: string, slotAt: Date): Promise<Date> {
+export async function storeMessageSendSlot(messageId: string, slotAt: Date, expiredBefore: Date): Promise<Date> {
   const db = getDb();
   const [stored] = await db
     .update(messages)
     .set({ scheduledFor: slotAt, updatedAt: new Date() })
-    .where(and(eq(messages.id, messageId), isNull(messages.scheduledFor)))
+    .where(
+      and(
+        eq(messages.id, messageId),
+        or(isNull(messages.scheduledFor), lt(messages.scheduledFor, expiredBefore)),
+      ),
+    )
     .returning({ scheduledFor: messages.scheduledFor });
 
   if (stored?.scheduledFor) return stored.scheduledFor;
@@ -188,6 +197,33 @@ export async function storeMessageSendSlot(messageId: string, slotAt: Date): Pro
   if (!existing) throw new Error(`Message ${messageId} not found while storing its send slot.`);
   if (!existing.scheduledFor) throw new Error(`Message ${messageId} was not given a send slot.`);
   return existing.scheduledFor;
+}
+
+/**
+ * Review item 1: a message blocked by the sending window, the daily cap or a park keeps a
+ * slot that has already passed; at the next window start it would skip pacing and send at
+ * once alongside every other blocked message. Clearing the slot here makes the next attempt
+ * reserve a fresh place in the mailbox queue.
+ */
+export async function clearMessageSendSlot(messageId: string): Promise<void> {
+  const db = getDb();
+  await db
+    .update(messages)
+    .set({ scheduledFor: null, updatedAt: new Date() })
+    .where(and(eq(messages.id, messageId), isNotNull(messages.scheduledFor)));
+}
+
+/**
+ * The by-key variant for a block that happens before the guard has read the message row
+ * (a kill switch, a missing signature or a DRY_RUN with nowhere to send). The key is unique,
+ * so this clears exactly the message the step would have sent.
+ */
+export async function clearMessageSendSlotByKey(key: string): Promise<void> {
+  const db = getDb();
+  await db
+    .update(messages)
+    .set({ scheduledFor: null, updatedAt: new Date() })
+    .where(and(eq(messages.idempotencyKey, key), isNotNull(messages.scheduledFor)));
 }
 
 export async function markMessageSent(messageId: string, input: MarkSentInput): Promise<Message> {

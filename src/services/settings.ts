@@ -6,6 +6,9 @@ import { defaultSettings, normalizeRequiresConsentGeos, requiresConsentForCountr
 import { getEnv } from "@/src/lib/env";
 import { isValidTimeZone } from "@/src/lib/time-windows";
 import { recordActivity } from "./activity";
+// Type-only import: erased at compile time, so `enrollment.ts` importing this module for
+// `countryRequiresConsent` does not become a runtime cycle.
+import type { ParkedReason } from "./enrollment";
 
 /**
  * The `settings` table is a singleton (section 5). Reading it creates the row from
@@ -81,14 +84,38 @@ export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
 
   if (!updated) throw new Error("Settings update matched no row.");
 
-  // B3: a parked sequence (kill switch on, config incomplete, mailbox paused) waits until
-  // the next sending window. Saving settings is one of the three events that should wake it
-  // immediately instead — the owner just fixed whatever was wrong. Imported dynamically
-  // because `enrollment.ts` imports this module.
-  const { wakeParkedRuns } = await import("./enrollment");
-  await wakeParkedRuns(patch.killSwitch === false ? "kill_switch_off" : "settings_saved");
+  // Review stage 1, item 2: wake only the runs this patch actually unblocked. A save that
+  // touches caps or windows clears nothing, so a run parked on `config_incomplete` stays
+  // parked. The wake itself is scheduled after the response: it is a paged walk over every
+  // matching enrollment and must not run synchronously inside the Server Action. Imported
+  // dynamically because `enrollment.ts` imports this module.
+  const cleared = parkReasonsClearedByPatch(current, updated);
+  if (cleared.length > 0) {
+    const { scheduleWakeParkedRuns } = await import("./enrollment");
+    await scheduleWakeParkedRuns(cleared);
+  }
 
   return updated;
+}
+
+/**
+ * Review stage 1, item 2: which parks a settings patch clears. Only a real transition
+ * counts — a save that leaves the identity incomplete, or the kill switch on, clears
+ * nothing, so it must not wake a run parked for that reason.
+ */
+export function parkReasonsClearedByPatch(
+  before: Pick<Settings, "killSwitch" | "signature" | "postalAddress">,
+  after: Pick<Settings, "killSwitch" | "signature" | "postalAddress">,
+): ParkedReason[] {
+  const cleared: ParkedReason[] = [];
+  if (before.killSwitch && !after.killSwitch) cleared.push("kill_switch");
+  if (identityIncomplete(before) && !identityIncomplete(after)) cleared.push("config_incomplete");
+  return cleared;
+}
+
+/** Section 7 rule 0 / review item 18: email is blocked while either field is empty. */
+function identityIncomplete(value: Pick<Settings, "signature" | "postalAddress">): boolean {
+  return value.signature.trim().length === 0 || value.postalAddress.trim().length === 0;
 }
 
 /**

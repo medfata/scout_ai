@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { start } from "workflow/api";
 
 import { getDb, withTransaction } from "@/src/db/client";
@@ -297,31 +297,79 @@ export async function clearWorkflowRunId(enrollmentId: string, expected: string 
     .where(and(eq(enrollments.id, enrollmentId), matches));
 }
 
-/** Review item B3: the conditions that park a run instead of polling it hourly. */
+/**
+ * Review stage 1, item 2: why a run is parked. Stored in `enrollments.parked_reason` so a
+ * settings save wakes only the enrollments whose block it actually cleared.
+ */
+export type ParkedReason = "kill_switch" | "config_incomplete" | "mailbox" | "dry_run_unconfigured";
+
+/** The owner actions that clear a park, named the way the call sites talk about them. */
 export type ParkWakeReason = "settings_saved" | "mailbox_reconnected" | "kill_switch_off";
 
+/**
+ * Which parked reasons each named event clears. `mailbox_reconnected` includes
+ * `config_incomplete` because a missing or paused mailbox is reported by the send guard as
+ * `config_incomplete` (section 7 rule 0, review item 18).
+ */
+const REASONS_CLEARED_BY_EVENT: Record<ParkWakeReason, readonly ParkedReason[]> = {
+  kill_switch_off: ["kill_switch"],
+  mailbox_reconnected: ["mailbox", "config_incomplete"],
+  // A generic "settings saved" clears nothing on its own: `updateSettings` passes the
+  // reasons its patch actually cleared (review stage 1, item 2), so an unrelated save
+  // never wakes a run parked on a block it did not touch.
+  settings_saved: [],
+};
+
+/** One page of parked rows; the walk keeps going until a page comes back short. */
+const WAKE_PAGE_SIZE = 200;
+
 export interface WakeParkedResult {
+  /** Parked enrollments examined across every page. */
   checked: number;
+  /** Enrollments whose live run accepted the `resume` event. */
   resumed: number;
 }
 
 /**
- * Review item B3: turning the kill switch off, saving settings or reconnecting the
- * mailbox must wake the runs parked on those blocks. Every live enrollment gets a
- * `resume` lead event; a run that is sleeping normally just recomputes the same slot,
- * which is harmless, and there is no park column to query instead.
+ * Review item B3 + stage 1 item 2: wake the runs parked on a reason the owner's change
+ * cleared. Only rows whose `parked_reason` matches are resumed, so saving caps cannot wake
+ * a run parked on a missing signature, and turning the kill switch off cannot wake a run
+ * parked on an unconnected mailbox.
  *
- * Callers (the settings and mailbox paths, owned elsewhere) call this and ignore the
- * result; a failure to wake one enrollment must never fail the owner's save.
+ * The walk is keyset-paged by id: a single `limit(200)` would silently leave every run
+ * after the first page parked. A successful resume clears the row's reason so the same
+ * park is not woken twice; a run that is still blocked re-parks with a fresh reason.
+ *
+ * Callers (the settings and mailbox paths) schedule this through `scheduleWakeParkedRuns`
+ * and ignore the result; failing to wake one enrollment must never fail the owner's save.
  */
-export async function wakeParkedRuns(reason: ParkWakeReason): Promise<WakeParkedResult> {
-  const rows = await listEnrollmentsForReconcile(200);
+export async function wakeParkedRuns(cleared: ParkWakeReason | readonly ParkedReason[]): Promise<WakeParkedResult> {
+  const reasons = typeof cleared === "string" ? REASONS_CLEARED_BY_EVENT[cleared] : cleared;
+  if (reasons.length === 0) return { checked: 0, resumed: 0 };
+
   const { resumeLeadEvent } = await import("@/src/services/hooks");
 
+  let checked = 0;
   let resumed = 0;
-  for (const enrollment of rows) {
-    const result = await resumeLeadEvent(enrollment.id, { type: "resume" });
-    if (result.resumed) resumed += 1;
+  let afterId: string | null = null;
+
+  for (;;) {
+    const page = await listParkedPage(reasons, afterId);
+    if (page.length === 0) break;
+
+    for (const row of page) {
+      checked += 1;
+      const result = await resumeLeadEvent(row.id, { type: "resume" });
+      if (result.resumed) {
+        resumed += 1;
+        await clearParkedReason(row.id, row.parkedReason);
+      }
+    }
+
+    if (page.length < WAKE_PAGE_SIZE) break;
+    const last = page[page.length - 1];
+    if (!last) break;
+    afterId = last.id;
   }
 
   await recordActivity({
@@ -329,10 +377,67 @@ export async function wakeParkedRuns(reason: ParkWakeReason): Promise<WakeParked
     entityType: "enrollment",
     entityId: null,
     type: "enrollment.transition",
-    data: { reason: "parked_runs_woken", trigger: reason, checked: rows.length, resumed },
+    data: { reason: "parked_runs_woken", cleared: [...reasons], checked, resumed },
   });
 
-  return { checked: rows.length, resumed };
+  return { checked, resumed };
+}
+
+/** Keyset page so concurrent wakes and status changes cannot skip rows between pages. */
+async function listParkedPage(
+  reasons: readonly ParkedReason[],
+  afterId: string | null,
+): Promise<Array<{ id: string; parkedReason: string | null }>> {
+  const db = getDb();
+  const conditions = [
+    inArray(enrollments.status, ["active", "waiting"]),
+    inArray(enrollments.parkedReason, [...reasons]),
+  ];
+  if (afterId !== null) conditions.push(gt(enrollments.id, afterId));
+
+  return db
+    .select({ id: enrollments.id, parkedReason: enrollments.parkedReason })
+    .from(enrollments)
+    .where(and(...conditions))
+    .orderBy(enrollments.id)
+    .limit(WAKE_PAGE_SIZE);
+}
+
+/** Clears a park only if it is still the one we woke, so a fresh park is never clobbered. */
+async function clearParkedReason(enrollmentId: string, expected: string | null): Promise<void> {
+  const db = getDb();
+  await db
+    .update(enrollments)
+    .set({ parkedReason: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(enrollments.id, enrollmentId),
+        expected === null ? isNull(enrollments.parkedReason) : eq(enrollments.parkedReason, expected),
+      ),
+    );
+}
+
+/**
+ * Review stage 1, item 2: `wakeParkedRuns` is a paged walk over every matching enrollment,
+ * so it must not run inside the owner's Server Action. `after()` runs it once the response
+ * has been sent. Outside a Next.js request scope (workflow tests, scripts) there is no
+ * response to schedule against; the change is still durable and each run wakes at its next
+ * sending window, so this logs and moves on instead of waking inline.
+ */
+export async function scheduleWakeParkedRuns(cleared: readonly ParkedReason[]): Promise<void> {
+  if (cleared.length === 0) return;
+
+  try {
+    const { after } = await import("next/server");
+    after(async () => {
+      await wakeParkedRuns(cleared);
+    });
+  } catch (error) {
+    logger.info("enrollment.wake_not_scheduled", {
+      reason: error instanceof Error ? error.message : "unknown",
+      cleared: [...cleared],
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -65,12 +65,14 @@ export async function upsertAccount(input: UpsertAccountInput): Promise<Connecte
     data: { provider: input.provider, kind: input.kind },
   });
 
-  // B3: a mailbox that was paused for bad credentials parks its sequences; reconnecting is
-  // the event that should wake them. Imported dynamically to avoid a module cycle with
-  // `enrollment.ts`, which imports this module for send accounting.
+  // Review stage 1, item 2: a run parked on a missing or paused mailbox wakes when the
+  // mailbox reconnects, and only then. `config_incomplete` is included because the send
+  // guard reports a missing mailbox with that rule. The wake is scheduled after the
+  // response, never run inline; imported dynamically to avoid a module cycle with
+  // `enrollment.ts`.
   if (input.status === "ok") {
-    const { wakeParkedRuns } = await import("./enrollment");
-    await wakeParkedRuns("mailbox_reconnected");
+    const { scheduleWakeParkedRuns } = await import("./enrollment");
+    await scheduleWakeParkedRuns(["mailbox", "config_incomplete"]);
   }
 
   return row;

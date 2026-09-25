@@ -88,6 +88,11 @@ export const OPT_OUT_PHRASES: readonly string[] = [
   "don't want to hear from me",
   "do not want to hear from me",
   "no thanks and i'll",
+  // `DEFAULT_OPT_OUT_LINE` below is the line the copy prompt mandates, so the critic has to
+  // accept it. Without these two the default line matched nothing and every draft failed
+  // `missing_opt_out` — caught by the evals before a single model call was paid for.
+  'reply "no"',
+  "won't email you again",
 ];
 
 const LINK_PATTERN = /https?:\/\/|www\.[a-z0-9-]+\.[a-z]{2,}/i;

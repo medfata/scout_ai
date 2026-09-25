@@ -23,6 +23,7 @@ import {
   nextWindowStart,
   spacingMinutesFor,
 } from "@/src/lib/time-windows";
+import { getPrimaryEmailAccount } from "@/src/services/accounts";
 import { recordActivity } from "@/src/services/activity";
 import { draftEnrollmentStep } from "@/src/services/drafting";
 import {
@@ -33,6 +34,7 @@ import {
   loadSequencePlan,
   stopEnrollment,
   transitionEnrollment,
+  type ParkedReason,
 } from "@/src/services/enrollment";
 import { getMessageByIdempotencyKey, skipMessage } from "@/src/services/messages";
 import { nextCounterDayStart } from "@/src/services/quota";
@@ -73,10 +75,37 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * Review item B3: these blocks are fixed by the owner, not by waiting a few minutes, so
  * they park the run at the next sending window instead of polling hourly. Turning the
- * kill switch off, saving settings or reconnecting the mailbox calls
- * `wakeParkedRuns()`, which interrupts the park early with a `resume` lead event.
+ * kill switch off, completing the sending identity or reconnecting the mailbox wakes the
+ * matching parks directly (review stage 1, item 2), without a blanket wake of every run.
  */
 const PARK_RULES: ReadonlySet<SendGuardRule> = new Set(["kill_switch", "config_incomplete", "dry_run_unconfigured"]);
+
+/** The rules that park, as a narrow type so every park records a reason. */
+type ParkRule = "kill_switch" | "config_incomplete" | "dry_run_unconfigured";
+
+function isParkRule(rule: SendGuardRule): rule is ParkRule {
+  return PARK_RULES.has(rule);
+}
+
+/**
+ * Review stage 1, item 2: the reason recorded on the enrollment. `config_incomplete`
+ * covers two owner-fixable causes, and they are woken by different events, so the cause
+ * is resolved here: a missing signature or postal address vs. a missing/paused mailbox.
+ */
+async function parkedReasonFor(rule: ParkRule, channel: "email" | "linkedin" | undefined): Promise<ParkedReason> {
+  switch (rule) {
+    case "kill_switch":
+      return "kill_switch";
+    case "dry_run_unconfigured":
+      return "dry_run_unconfigured";
+    case "config_incomplete": {
+      const settings = await getSettings();
+      if (!settings.signature.trim() || !settings.postalAddress.trim()) return "config_incomplete";
+      if (channel === "email" && !(await getPrimaryEmailAccount())) return "mailbox";
+      return "config_incomplete";
+    }
+  }
+}
 
 export type SequenceResult =
   | { status: "completed"; reason: string }
@@ -528,6 +557,12 @@ async function sendStep(enrollmentId: string, index: number): Promise<SendOutcom
   const step = getStep(sequence, index);
   if (!step) return { action: "skip", reason: "missing_step" };
 
+  // Review stage 1, item 2: this attempt reached the send path again, so the recorded park
+  // no longer applies. A block below re-parks with a fresh reason; a send leaves it clear.
+  if (enrollment.parkedReason !== null) {
+    await clearParkedReason(enrollmentId);
+  }
+
   let outcome: SendOutcome;
   try {
     outcome = await sendMessage({ enrollmentId, step: index, channel: step.channel, stepDefinition: step });
@@ -567,10 +602,11 @@ async function sendStep(enrollmentId: string, index: number): Promise<SendOutcom
       return { action: "skip", reason: "send_failed" };
     case "blocked": {
       const nextAt = outcome.nextAt && outcome.nextAt.getTime() > Date.now() ? outcome.nextAt : null;
-      if (PARK_RULES.has(outcome.rule)) {
+      if (isParkRule(outcome.rule)) {
         // Review item B3: an owner-fixable block parks the run until the next sending
-        // window. `wakeParkedRuns()` interrupts the park as soon as the owner fixes it.
-        await parkUntilNextWindowStep(enrollmentId, index);
+        // window, recording why. `wakeParkedRuns()` interrupts only the parks the owner's
+        // change actually cleared (review stage 1, item 2).
+        await parkUntilNextWindowStep(enrollmentId, index, outcome.rule);
         return { action: "retry", reason: outcome.rule };
       }
       switch (outcome.rule) {
@@ -641,11 +677,11 @@ async function capRetryAtStep(enrollmentId: string): Promise<Date> {
 /**
  * Review item B3: a kill switch, incomplete config, missing DRY_RUN redirect or a paused
  * mailbox parks the run at the next moment the channel may legally send — the next window
- * start — instead of waking every hour to ask the same question. The park is recorded so
- * the dashboard can explain why a run is not sending, and `wakeParkedRuns()` interrupts
- * it as soon as the owner fixes the condition.
+ * start — instead of waking every hour to ask the same question. The park records *why*
+ * (review stage 1, item 2), so the dashboard can explain it and `wakeParkedRuns()` can
+ * wake only the runs whose reason the owner's change actually cleared.
  */
-async function parkUntilNextWindowStep(enrollmentId: string, index: number): Promise<void> {
+async function parkUntilNextWindowStep(enrollmentId: string, index: number, rule: ParkRule): Promise<void> {
   "use step";
 
   const enrollment = await getEnrollment(enrollmentId);
@@ -657,14 +693,15 @@ async function parkUntilNextWindowStep(enrollmentId: string, index: number): Pro
   const timeZone = plan.lead.contact.timezone ?? settings.timezone;
   const window = step?.channel === "linkedin" ? settings.sendingWindows.linkedin : settings.sendingWindows.email;
   const at = nextWindowStart(new Date(), timeZone, window);
+  const parkedReason = await parkedReasonFor(rule, step?.channel);
 
-  await updateNextAction(enrollmentId, at);
+  await updateNextAction(enrollmentId, at, parkedReason);
   await recordActivity({
     actor: "system",
     entityType: "enrollment",
     entityId: enrollmentId,
     type: "guard.blocked",
-    data: { step: index, reason: "parked", nextActionAt: at.toISOString() },
+    data: { step: index, reason: "parked", parkedReason, nextActionAt: at.toISOString() },
   });
 }
 
@@ -683,10 +720,23 @@ async function postponeToNextCounterDayStep(enrollmentId: string): Promise<void>
   });
 }
 
-/** The one writer of `enrollments.nextActionAt`; callable from a step or from a step's helper. */
-async function updateNextAction(enrollmentId: string, at: Date): Promise<void> {
+/**
+ * The one writer of `enrollments.nextActionAt`; callable from a step or from a step's
+ * helper. Only a park passes a `parkedReason`; every other wait clears it, so a run that
+ * moved on is never woken for a block it already left (review stage 1, item 2).
+ */
+async function updateNextAction(enrollmentId: string, at: Date, parkedReason: ParkedReason | null = null): Promise<void> {
   const db = getDb();
-  await db.update(enrollments).set({ nextActionAt: at, updatedAt: new Date() }).where(eq(enrollments.id, enrollmentId));
+  await db
+    .update(enrollments)
+    .set({ nextActionAt: at, parkedReason, updatedAt: new Date() })
+    .where(eq(enrollments.id, enrollmentId));
+}
+
+/** Review stage 1, item 2: the run reached the send path, so the recorded park is stale. */
+async function clearParkedReason(enrollmentId: string): Promise<void> {
+  const db = getDb();
+  await db.update(enrollments).set({ parkedReason: null, updatedAt: new Date() }).where(eq(enrollments.id, enrollmentId));
 }
 
 export type ApprovalCheck =

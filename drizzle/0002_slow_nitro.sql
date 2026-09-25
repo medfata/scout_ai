@@ -1,0 +1,1 @@
+ALTER TABLE "enrollments" ADD COLUMN "parked_reason" text;

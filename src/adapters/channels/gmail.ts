@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { Auth, google } from "googleapis";
 
 import { ConfigurationError, VendorError } from "@/src/lib/errors";
@@ -117,15 +115,22 @@ class GmailChannel implements ReconcilableChannel {
       );
     }
 
+    // Review item 3: the guard always supplies the Message-ID it stored before the provider
+    // call (review item 8), which is what makes reconciliation possible. An adapter-invented
+    // random id would defeat that lookup, so a direct caller without one is a configuration
+    // error, never a silent fallback.
+    if (!message.rfcMessageId || message.rfcMessageId.trim().length === 0) {
+      throw new ConfigurationError(
+        "The outbound message has no RFC 5322 Message-ID. The send guard must derive and store one before calling the Gmail adapter.",
+      );
+    }
+    const rfcMessageId = message.rfcMessageId;
+
     const client = this.deps.createOAuthClient();
     const accessToken = await this.ensureAccessToken(mailbox, client);
     client.setCredentials({ access_token: accessToken });
 
     const now = this.deps.now();
-    // Review item 8: the guard passes the id derived from the idempotency key so it can be
-    // stored before the provider call. The random id is only the fallback for direct
-    // adapter calls (tests, future callers) that have no idempotency key.
-    const rfcMessageId = rfcMessageIdOf(message) ?? buildMessageId(mailbox.handle);
     const raw = buildRfc5322Message({
       from: mailbox.handle,
       fromName: message.fromName ?? null,
@@ -438,24 +443,10 @@ export function buildRfc5322Message(input: Rfc5322Input): string {
   return `${headers.join("\r\n")}\r\n\r\n${body}`;
 }
 
-export function buildMessageId(handle: string): string {
-  return `<${randomUUID()}@${senderDomainFrom(handle)}>`;
-}
-
 /** The domain half of a mailbox address, safe to put in a Message-ID. */
 export function senderDomainFrom(handle: string): string {
   const domain = handle.includes("@") ? handle.slice(handle.lastIndexOf("@") + 1) : "";
   return /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i.test(domain) ? domain : "scout.local";
-}
-
-/**
- * Review item 8: the send guard passes the deterministic Message-ID on the outbound
- * message. The port (`OutboundMessage`) does not declare it yet, so it is read
- * structurally and falls back to the random id for direct adapter callers.
- */
-function rfcMessageIdOf(message: OutboundMessage): string | null {
-  const candidate = (message as OutboundMessage & { rfcMessageId?: unknown }).rfcMessageId;
-  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
 }
 
 /** Gmail's `rfc822msgid:` operator matches the bare id, without the angle brackets. */

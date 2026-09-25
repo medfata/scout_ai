@@ -1,0 +1,85 @@
+# Generated from the fixtures in evals/golden/ by evals/generate-configs.ts.
+# Change a fixture and re-run `pnpm tsx evals/generate-configs.ts` to keep every id in sync.
+
+description: "Copywriter + critic eval: real revision loop, section 6 code rules, one model-graded idea check."
+
+prompts:
+  - "scout-evals"
+
+providers:
+  - id: file://providers/copywriter-critic.ts
+    label: copywriter+critic
+
+tests:
+  - description: "copywriter clear-fit-support-saas:email_1"
+    vars: { leadId: clear-fit-support-saas, stepKey: email_1 }
+    assert:
+      # Code: evaluateCopyRules (zero errors), DraftSchema, one CTA question outside the signature.
+      - type: javascript
+        value: file://assertions/copy-rules.ts
+      # Model-graded, and only for this: one concrete idea tied to a signal.
+      - type: javascript
+        value: file://assertions/concrete-idea.ts
+  - description: "copywriter thin-website-stealth:email_1"
+    vars: { leadId: thin-website-stealth, stepKey: email_1 }
+    assert:
+      # Code: evaluateCopyRules (zero errors), DraftSchema, one CTA question outside the signature.
+      - type: javascript
+        value: file://assertions/copy-rules.ts
+      # Model-graded, and only for this: one concrete idea tied to a signal.
+      - type: javascript
+        value: file://assertions/concrete-idea.ts
+  - description: "copywriter non-english-fr:email_1"
+    vars: { leadId: non-english-fr, stepKey: email_1 }
+    assert:
+      # Code: evaluateCopyRules (zero errors), DraftSchema, one CTA question outside the signature.
+      - type: javascript
+        value: file://assertions/copy-rules.ts
+      # Model-graded, and only for this: one concrete idea tied to a signal.
+      - type: javascript
+        value: file://assertions/concrete-idea.ts
+  - description: "copywriter clear-fit-ecommerce:email_1 (no_proof)"
+    vars: { leadId: clear-fit-ecommerce, stepKey: email_1, offerVariant: no_proof }
+    assert:
+      # Code: evaluateCopyRules (zero errors), DraftSchema, one CTA question outside the signature.
+      - type: javascript
+        value: file://assertions/copy-rules.ts
+      # Model-graded, and only for this: one concrete idea tied to a signal.
+      - type: javascript
+        value: file://assertions/concrete-idea.ts
+  - description: "copywriter clear-fit-support-saas:email_followup_1"
+    vars: { leadId: clear-fit-support-saas, stepKey: email_followup_1 }
+    assert:
+      # Code: evaluateCopyRules (zero errors), DraftSchema, one CTA question outside the signature.
+      - type: javascript
+        value: file://assertions/copy-rules.ts
+      # Model-graded, and only for this: one concrete idea tied to a signal.
+      - type: javascript
+        value: file://assertions/concrete-idea.ts
+  - description: "copywriter clear-fit-logistics:email_close"
+    vars: { leadId: clear-fit-logistics, stepKey: email_close }
+    assert:
+      # Code: evaluateCopyRules (zero errors), DraftSchema, one CTA question outside the signature.
+      - type: javascript
+        value: file://assertions/copy-rules.ts
+      # Model-graded, and only for this: one concrete idea tied to a signal.
+      - type: javascript
+        value: file://assertions/concrete-idea.ts
+  - description: "copywriter clear-fit-support-saas:linkedin_message"
+    vars: { leadId: clear-fit-support-saas, stepKey: linkedin_message }
+    assert:
+      # Code: evaluateCopyRules (zero errors), DraftSchema, one CTA question outside the signature.
+      - type: javascript
+        value: file://assertions/copy-rules.ts
+      # Model-graded, and only for this: one concrete idea tied to a signal.
+      - type: javascript
+        value: file://assertions/concrete-idea.ts
+  - description: "copywriter clear-fit-marketplace:email_1"
+    vars: { leadId: clear-fit-marketplace, stepKey: email_1 }
+    assert:
+      # Code: evaluateCopyRules (zero errors), DraftSchema, one CTA question outside the signature.
+      - type: javascript
+        value: file://assertions/copy-rules.ts
+      # Model-graded, and only for this: one concrete idea tied to a signal.
+      - type: javascript
+        value: file://assertions/concrete-idea.ts

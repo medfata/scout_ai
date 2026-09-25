@@ -1,0 +1,213 @@
+# Generated from the fixtures in evals/golden/ by evals/generate-configs.ts.
+# Change a fixture and re-run `pnpm tsx evals/generate-configs.ts` to keep every id in sync.
+
+description: "Scorer eval: does the real scorer (prompt + code rules) put each fictional golden lead in the right tier?"
+
+prompts:
+  - "scout-evals"
+
+providers:
+  - id: file://providers/scorer.ts
+    label: scorer
+
+tests:
+  - description: "clear-fit-support-saas — Clear fit: exact title, industry and size match, three fresh signals — must score tier A and be email-eligible."
+    vars: { leadId: clear-fit-support-saas }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "clear-fit-logistics — Clear fit: operations title in a 400-person logistics company with a concrete manual process — must score tier A."
+    vars: { leadId: clear-fit-logistics }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "clear-fit-ecommerce — Clear fit: e-commerce operations leader, strong growth trigger, two cited signals — must score tier A."
+    vars: { leadId: clear-fit-ecommerce }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "weak-fit-design-studio — Weak fit: 6-person design studio, no operations function — must not score tier A."
+    vars: { leadId: weak-fit-design-studio }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "weak-fit-solo-consultant — Weak fit: solo consultant below the smallest size band — must not score tier A."
+    vars: { leadId: weak-fit-solo-consultant }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "weak-fit-enterprise-finserv — Weak fit: 5,000-person bank, finance title and size both outside the ICP — must not score tier A."
+    vars: { leadId: weak-fit-enterprise-finserv }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "disqualifier-ai-agency — Disqualifier hit: the company is an AI automation agency (an ICP disqualifier) — code must disqualify it."
+    vars: { leadId: disqualifier-ai-agency }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "disqualifier-crypto — Disqualifier hit: crypto exchange (an ICP disqualifier) — code must disqualify it."
+    vars: { leadId: disqualifier-crypto }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "thin-website-stealth — Thin website: one weak signal and low confidence — must not be inflated into tier A."
+    vars: { leadId: thin-website-stealth }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "non-english-de — Non-English company: a German software company with a German contact title and language de — the support role maps to the ICP; consent rules make email ineligible."
+    vars: { leadId: non-english-de }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "consent-canada — Consent country: a good Canadian fit whose email step must be skipped with reason requires_consent (section 9)."
+    vars: { leadId: consent-canada }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "catch-all-email — Catch-all email: the contact is a fit but the address is not sendable — no email first touch (section 9, LinkedIn-first)."
+    vars: { leadId: catch-all-email }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "clear-fit-fintech — Clear fit: fintech operations leader with a compliance-free automation angle — must score tier A."
+    vars: { leadId: clear-fit-fintech }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "clear-fit-healthtech — Clear fit: 600-person healthcare-software operations leader with a data-free automation angle — must score tier A."
+    vars: { leadId: clear-fit-healthtech }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "weak-fit-hardware — Weak fit: hardware manufacturer, industry outside the ICP and no software support motion — must not score tier A."
+    vars: { leadId: weak-fit-hardware }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "weak-fit-nonprofit — Weak fit: non-profit with a small budget and no operations pain in evidence — must not score tier A."
+    vars: { leadId: weak-fit-nonprofit }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "disqualifier-staffing — Disqualifier hit: staffing agency (an ICP disqualifier) — code must disqualify it."
+    vars: { leadId: disqualifier-staffing }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "thin-website-holding — Thin website: a holding company whose only page is a legal notice — one weak signal, must not be inflated."
+    vars: { leadId: thin-website-holding }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "non-english-fr — Non-English company: French e-commerce team, language fr — the copywriter must write in French."
+    vars: { leadId: non-english-fr }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "consent-germany — Consent country: a strong German logistics fit whose email step must be skipped with reason requires_consent (section 9)."
+    vars: { leadId: consent-germany }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "catch-all-ecommerce — Catch-all email: strong e-commerce fit with an unverifiable address — no email first touch (section 9)."
+    vars: { leadId: catch-all-ecommerce }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "suppressed-domain — Suppression: the contact is a fit but is on the do-not-contact list — code must disqualify with the do-not-contact reason."
+    vars: { leadId: suppressed-domain }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "clear-fit-marketplace — Clear fit: online marketplace operations leader with a seller-support pain — must score tier A."
+    vars: { leadId: clear-fit-marketplace }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "weak-fit-media — Weak fit: media company with an operations manager title but no matching industry or pain evidence — must not score tier A."
+    vars: { leadId: weak-fit-media }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts
+  - description: "disqualifier-gambling — Disqualifier hit: online gambling operator (an ICP disqualifier) — code must disqualify it."
+    vars: { leadId: disqualifier-gambling }
+    assert:
+      # Fixture integrity first (code), then the scorer expectations (code).
+      - type: javascript
+        value: file://assertions/lead-facts.ts
+      - type: javascript
+        value: file://assertions/scorer-expectations.ts

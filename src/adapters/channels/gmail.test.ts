@@ -3,7 +3,7 @@ import { HttpResponse, http } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { VendorError } from "@/src/lib/errors";
+import { ConfigurationError, VendorError } from "@/src/lib/errors";
 import type { OutboundMessage } from "@/src/ports/channel";
 import { createGmailChannel, type GmailCredentials, type GmailMailbox } from "./gmail";
 
@@ -67,7 +67,7 @@ describe("gmail channel", () => {
     expect(raw).toContain("To: prospect@acme.example");
     expect(raw).toContain("Subject: A quick idea for Acme");
     expect(raw).toMatch(/^Date: /m);
-    expect(raw).toMatch(/^Message-ID: <[0-9a-f-]+@scoutmail\.example>$/m);
+    expect(raw).toMatch(/^Message-ID: <scout\.test@scoutmail\.example>$/m);
     expect(raw).toContain("MIME-Version: 1.0");
     expect(raw).toContain('Content-Type: text/plain; charset="UTF-8"');
     expect(raw).toContain("Content-Transfer-Encoding: quoted-printable");
@@ -129,6 +129,18 @@ describe("gmail channel", () => {
 
     expect(result.rfcMessageId).toBe("<scout.deterministic@scoutmail.example>");
     expect(decodeRaw(captured?.body.raw)).toMatch(/^Message-ID: <scout\.deterministic@scoutmail\.example>$/m);
+  });
+
+  it("throws ConfigurationError instead of inventing a Message-ID (review item 3)", async () => {
+    server.use(captureSend());
+    const { channel } = makeChannel({ credentials: validCredentials() });
+
+    const error = await channel.send({ ...outbound(), rfcMessageId: "" }).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(ConfigurationError);
+    expect((error as ConfigurationError).message).toContain("Message-ID");
+    expect(sendCalls).toBe(0);
+    expect(captured).toBeNull();
   });
 
   it("tags a DRY_RUN send as a test and reports the redirect", async () => {
@@ -286,6 +298,8 @@ function outbound(overrides: Partial<OutboundMessage> = {}): OutboundMessage {
     threadId: null,
     inReplyTo: null,
     references: [],
+    // Review item 3: the port requires it; the guard always supplies one.
+    rfcMessageId: "<scout.test@scoutmail.example>",
     ...overrides,
   };
 }

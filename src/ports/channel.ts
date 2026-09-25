@@ -18,12 +18,13 @@ export interface OutboundMessage {
   inReplyTo: string | null;
   references: string[];
   /**
-   * The Message-ID this send must use. The send guard derives it from the idempotency key
-   * and stores it before calling the provider, so an ambiguous failure (timeout, reset) can
-   * be reconciled with `rfc822msgid:` instead of risking a double send (review item 8).
-   * Adapters may fall back to generating one when called directly.
+   * The Message-ID this send must use (review item 3: required, never invented by the
+   * adapter). The send guard derives it from the idempotency key and stores it before
+   * calling the provider, so an ambiguous failure (timeout, reset) can be reconciled with
+   * `rfc822msgid:` instead of risking a double send (review item 8). Non-email channels
+   * carry it too; a deterministic id is harmless where Message-IDs are not used.
    */
-  rfcMessageId?: string | null;
+  rfcMessageId: string;
   /** Display name for the From header. */
   fromName?: string;
   /** Section 7: with DRY_RUN, every send is rewritten to this address and tagged as a test. */

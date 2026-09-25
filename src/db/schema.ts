@@ -244,6 +244,12 @@ export const enrollments = pgTable(
     currentStep: integer("current_step").default(0).notNull(),
     workflowRunId: text("workflow_run_id"),
     nextActionAt: now("next_action_at"),
+    /**
+     * Why the run is parked (review stage 1, item 2): a kill switch, incomplete config or a
+     * paused mailbox parks until the next window, and only the event that clears that reason
+     * may wake it. Null when the run is not parked.
+     */
+    parkedReason: text("parked_reason"),
     startedAt: now("started_at"),
     completedAt: now("completed_at"),
     createdAt: createdAt(),

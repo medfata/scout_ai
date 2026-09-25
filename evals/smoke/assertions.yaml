@@ -1,0 +1,53 @@
+description: "No-key self-test for the real assertion scripts: they must pass on good fixture metadata and fail (via not-javascript) on deliberately broken metadata."
+
+prompts:
+  - "scout-evals-assertions"
+
+providers:
+  - id: file://./assertion-results-provider.ts
+    label: assertion-results
+
+tests:
+  - description: "lead-facts passes for a golden lead"
+    provider: file://./assertion-results-provider.ts
+    vars: { scenario: scorer-ok, leadId: clear-fit-support-saas }
+    assert:
+      - type: javascript
+        value: file://../assertions/lead-facts.ts
+
+  - description: "scorer expectations pass on a tier A result"
+    provider: file://./assertion-results-provider.ts
+    vars: { scenario: scorer-ok }
+    assert:
+      - type: javascript
+        value: file://../assertions/scorer-expectations.ts
+
+  - description: "scorer expectations detect a wrong tier"
+    provider: file://./assertion-results-provider.ts
+    vars: { scenario: scorer-wrong }
+    assert:
+      - type: not-javascript
+        value: file://../assertions/scorer-expectations.ts
+
+  - description: "copy rules pass on a compliant draft"
+    provider: file://./assertion-results-provider.ts
+    vars: { scenario: copy-ok, leadId: clear-fit-support-saas }
+    assert:
+      - type: javascript
+        value: file://../assertions/copy-rules.ts
+
+  - description: "copy rules detect a link in email 1"
+    provider: file://./assertion-results-provider.ts
+    vars: { scenario: copy-violates, leadId: clear-fit-support-saas }
+    assert:
+      - type: not-javascript
+        value: file://../assertions/copy-rules.ts
+
+  - description: "classifier intent and details assertions pass for a labelled OOO reply"
+    provider: file://./assertion-results-provider.ts
+    vars: { scenario: classifier-ok }
+    assert:
+      - type: javascript
+        value: file://../assertions/classifier-intent.ts
+      - type: javascript
+        value: file://../assertions/classifier-details.ts

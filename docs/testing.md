@@ -66,8 +66,14 @@ pnpm test:workflows tests/workflows/sequence-happy-path.test.ts
 `tests/setup/db.ts` is the whole harness. On the first `hasDatabase()` call in a worker
 process it connects to `DATABASE_URL`, runs `select 1`, then applies the committed Drizzle
 migrations from `./drizzle/` with `migrate()`. The result is cached for that process. A
-failure closes the pool, logs `tests.database_unavailable` (error name and socket code only,
-never the URL) and is remembered as "no database".
+failure closes the pool, logs the error name and socket code only (never the URL) and is
+remembered as "no database".
+
+**In CI that failure is fatal.** When `process.env.CI` is set and the database is
+unreachable, `hasDatabase()` logs `tests.database_unavailable_in_ci` and **throws**, so the
+suites fail to collect and Vitest exits non-zero. A skip in CI would turn a broken database
+configuration into a green run that tested nothing — which is exactly the failure mode this
+guards against. Locally (no `CI`) the same failure skips cleanly and exits 0.
 
 Every database-backed suite is wrapped in `describe.skipIf(!(await hasDatabase()))`. Suites
 call `resetDatabase()` in `beforeEach`, which truncates the sixteen domain tables with
@@ -81,6 +87,9 @@ manual work; CI runs it before the suites. Schema changes follow section 10 rule
 `pnpm db:generate`, commit the SQL, never edit an applied migration.
 
 ## What a skip looks like
+
+Locally, with no database reachable, both suites report the tests as skipped rather than
+failing:
 
 With no database reachable, both suites exit 0 and report the database-backed files as
 skipped:

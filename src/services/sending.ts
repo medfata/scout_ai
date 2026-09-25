@@ -23,6 +23,8 @@ import { getPrimaryEmailAccount, reserveSendSlot } from "./accounts";
 import { loadSequencePlan } from "./enrollment";
 import {
   claimMessageForSend,
+  clearMessageSendSlot,
+  clearMessageSendSlotByKey,
   getMessageByIdempotencyKey,
   getThreadAnchor,
   hasUnresolvedInbound,
@@ -67,31 +69,64 @@ export interface SendMessageInput {
 /** Review item 9: how long a `blocked` verdict waits before the workflow looks again. */
 const BLOCK_RETRY_MS = 60 * 60 * 1000;
 
+/**
+ * Review item 1: a reserved slot older than the longest spacing in section 7's pacing
+ * table (email 3–9 minutes) can no longer be honoured — the message missed its place in
+ * the mailbox queue while it was blocked. It must reserve again, not send the moment its
+ * next window opens.
+ */
+const SLOT_EXPIRY_MS = 9 * 60 * 1000;
+
+/**
+ * Review item 1: the blocks that invalidate the message's reserved slot. A window or a cap
+ * is a booking Scout will not honour today, and a park waits for the owner; in all three
+ * cases the slot is gone and the next attempt has to take a fresh one.
+ */
+const SLOT_RELEASING_RULES: ReadonlySet<SendGuardRule> = new Set([
+  "sending_window",
+  "daily_cap",
+  "config_incomplete",
+  "kill_switch",
+  "dry_run_unconfigured",
+]);
+
 export async function sendMessage(input: SendMessageInput): Promise<SendOutcome> {
   const env = getEnv();
   const settings = await getSettings();
   const now = new Date();
+  // Review item 1: the key identifies the message even before its row is read, so an early
+  // park can still release a stale pacing slot.
+  const key = idempotencyKey(input.enrollmentId, input.step, input.channel);
 
   // --- rule 0: configuration (review item 18) ------------------------------
   if (!settings.signature.trim() || !settings.postalAddress.trim()) {
-    return block(
-      "config_incomplete",
-      "Signature or postal address is missing in Settings; every send is blocked until both are set.",
-      { nextAt: retryAt(now) },
+    return releaseSlotOnBlock(
+      block(
+        "config_incomplete",
+        "Signature or postal address is missing in Settings; every send is blocked until both are set.",
+        { nextAt: retryAt(now) },
+      ),
+      key,
     );
   }
 
   // --- rule 1: kill switch (review item 9: pause, never terminate) ---------
   if (settings.killSwitch) {
-    return block("kill_switch", "The kill switch is on; every send is blocked.", { nextAt: retryAt(now) });
+    return releaseSlotOnBlock(
+      block("kill_switch", "The kill switch is on; every send is blocked.", { nextAt: retryAt(now) }),
+      key,
+    );
   }
 
   // --- review item 21: DRY_RUN needs somewhere safe to send ----------------
   if (env.DRY_RUN && input.channel === "email" && !env.DRY_RUN_REDIRECT_EMAIL) {
-    return block(
-      "dry_run_unconfigured",
-      "DRY_RUN is on but DRY_RUN_REDIRECT_EMAIL is not set, so there is nowhere safe to send. Set the redirect address.",
-      { nextAt: retryAt(now) },
+    return releaseSlotOnBlock(
+      block(
+        "dry_run_unconfigured",
+        "DRY_RUN is on but DRY_RUN_REDIRECT_EMAIL is not set, so there is nowhere safe to send. Set the redirect address.",
+        { nextAt: retryAt(now) },
+      ),
+      key,
     );
   }
 
@@ -148,7 +183,6 @@ export async function sendMessage(input: SendMessageInput): Promise<SendOutcome>
   }
 
   // --- the message must exist (rule 7 material) -----------------------------
-  const key = idempotencyKey(input.enrollmentId, input.step, input.channel);
   const message = await getMessageByIdempotencyKey(key);
   if (!message) {
     return block("not_approved", `No message exists for ${key}. Prepare it before sending.`);
@@ -162,10 +196,13 @@ export async function sendMessage(input: SendMessageInput): Promise<SendOutcome>
   const timeZone = plan.lead.contact.timezone ?? settings.timezone;
   const window = input.channel === "email" ? settings.sendingWindows.email : settings.sendingWindows.linkedin;
   if (!isWithinWindow(now, timeZone, window)) {
-    return block("sending_window", `Outside the ${input.channel} sending window for ${timeZone}.`, {
-      messageId: message.id,
-      nextAt: nextWindowStart(now, timeZone, window),
-    });
+    return releaseSlotOnBlock(
+      block("sending_window", `Outside the ${input.channel} sending window for ${timeZone}.`, {
+        messageId: message.id,
+        nextAt: nextWindowStart(now, timeZone, window),
+      }),
+      key,
+    );
   }
 
   // --- rule 7: the message is approved (or is being reconciled) -------------
@@ -179,10 +216,13 @@ export async function sendMessage(input: SendMessageInput): Promise<SendOutcome>
   const channel = getChannel(input.channel);
   if (!channel) {
     if (input.channel === "email") {
-      return block(
-        "config_incomplete",
-        "The Gmail channel is not configured. Set GMAIL_OAUTH_CLIENT_ID and GMAIL_OAUTH_CLIENT_SECRET, then connect the mailbox.",
-        { messageId: message.id, nextAt: retryAt(now) },
+      return releaseSlotOnBlock(
+        block(
+          "config_incomplete",
+          "The Gmail channel is not configured. Set GMAIL_OAUTH_CLIENT_ID and GMAIL_OAUTH_CLIENT_SECRET, then connect the mailbox.",
+          { messageId: message.id, nextAt: retryAt(now) },
+        ),
+        key,
       );
     }
     return { status: "skipped", messageId: message.id, reason: "linkedin_not_available" };
@@ -212,7 +252,7 @@ export async function sendMessage(input: SendMessageInput): Promise<SendOutcome>
     // (or was never sent at all); consuming again would double-count a single email.
     alreadyConsumed: wasSending,
   });
-  if (gate.outcome) return gate.outcome;
+  if (gate.outcome) return releaseSlotOnBlock(gate.outcome, key);
 
   // --- rule 8: claim, with the deterministic Message-ID stored first (item 8) --
   const senderDomain = gate.account ? senderDomainFrom(gate.account.handle) : "scout.local";
@@ -239,8 +279,8 @@ export async function sendMessage(input: SendMessageInput): Promise<SendOutcome>
   const isTest = env.DRY_RUN;
   const redirect = isTest ? env.DRY_RUN_REDIRECT_EMAIL ?? null : null;
 
-  // The port does not declare `rfcMessageId` yet; an extra property on a variable (not a
-  // fresh object literal) is assignable, and the Gmail adapter reads it structurally.
+  // Review item 3: `rfcMessageId` is required on the port. The id was derived from the
+  // idempotency key above and stored by the claim, so the adapter never invents one.
   const outbound: OutboundMessage = {
     to: input.channel === "email" ? redirect ?? plan.lead.email! : plan.lead.linkedinUrl!,
     // Review item 21: the test tag has to be visible in the recipient line, not only in a
@@ -371,6 +411,9 @@ async function handleChannelFailure(error: unknown, context: SendFailureContext)
     error instanceof ConfigurationError || (error instanceof ScoutError && error.code === "vendor_auth");
   if (accountProblem) {
     await releaseMessage(messageId);
+    // Review item 1: a park (`config_incomplete`) releases the reserved slot too, so the
+    // retry takes a fresh place in the mailbox queue.
+    await clearMessageSendSlot(messageId);
     await context.releaseCounters?.();
     logger.warn("send.blocked_configuration", {
       messageId,
@@ -552,25 +595,32 @@ async function checkCapacity(context: CapacityContext): Promise<CapacityGate> {
   // Review item B2: a message whose own slot has not arrived waits for it; the slot was
   // reserved on an earlier attempt and is stored on the message, so this attempt must not
   // touch `next_send_at` (that belongs to whatever reserved after us).
+  //
+  // Review item 1: a slot older than the longest spacing is expired — the message missed
+  // its place while a window, cap or park held it back. It falls through to the reservation
+  // below instead of sending the moment its next window opens.
+  const expiredBefore = new Date(context.now.getTime() - SLOT_EXPIRY_MS);
   const ownedSlot = context.scheduledFor;
-  if (ownedSlot && ownedSlot.getTime() > context.now.getTime()) {
-    return {
-      outcome: block("pacing", `This message's reserved send slot is ${ownedSlot.toISOString()}.`, {
-        messageId: context.messageId,
-        nextAt: ownedSlot,
-      }),
-    };
-  }
-
-  if (!ownedSlot) {
-    // No slot yet: take one atomically. `reserveSendSlot` serialises on the mailbox row, so
-    // two enrollments waking together get consecutive slots rather than the same one.
+  if (ownedSlot && ownedSlot.getTime() >= expiredBefore.getTime()) {
+    if (ownedSlot.getTime() > context.now.getTime()) {
+      return {
+        outcome: block("pacing", `This message's reserved send slot is ${ownedSlot.toISOString()}.`, {
+          messageId: context.messageId,
+          nextAt: ownedSlot,
+        }),
+      };
+    }
+    // The slot arrived within the spacing window: honour it and send now.
+  } else {
+    // No usable slot: take one atomically. `reserveSendSlot` serialises on the mailbox row,
+    // so two enrollments waking together get consecutive slots rather than the same one.
     const spacing = spacingMinutesFor("email", isNew ? "new" : "followup");
     const reservation = await reserveSendSlot(account.id, jitterMs(spacing.min, spacing.max), context.now);
     // Store before deciding. If a racing attempt on the same message won the conditional
     // update, this returns that attempt's slot and we wait for it instead of consuming a
-    // second slot from the mailbox queue.
-    const slotAt = await storeMessageSendSlot(context.messageId, reservation.slotAt);
+    // second slot from the mailbox queue. The conditional update also overwrites an expired
+    // slot (review item 1), which is the case this branch exists for.
+    const slotAt = await storeMessageSendSlot(context.messageId, reservation.slotAt, expiredBefore);
     if (slotAt.getTime() > context.now.getTime()) {
       return {
         outcome: block("pacing", `The mailbox reserved this message's send slot for ${slotAt.toISOString()}.`, {
@@ -665,6 +715,17 @@ function block(rule: SendGuardRule, detail: string, options: BlockOptions = {}):
     ...(options.messageId ? { messageId: options.messageId } : {}),
     ...(options.nextAt ? { nextAt: options.nextAt } : {}),
   };
+}
+
+/**
+ * Review item 1: releases the message's pacing slot before returning a block that makes the
+ * slot unusable. It clears by idempotency key because the park rules run before the guard
+ * reads the message row; when there is no message, the update is a no-op.
+ */
+async function releaseSlotOnBlock(outcome: SendOutcome, key: string): Promise<SendOutcome> {
+  if (outcome.status !== "blocked" || !SLOT_RELEASING_RULES.has(outcome.rule)) return outcome;
+  await clearMessageSendSlotByKey(key);
+  return outcome;
 }
 
 /** Review item 9: blocks pause; the workflow decides when to look again. */
