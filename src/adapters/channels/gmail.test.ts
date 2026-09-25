@@ -98,10 +98,37 @@ describe("gmail channel", () => {
     const raw = decodeRaw(captured?.body.raw);
     expect(raw).toContain("In-Reply-To: <parent@acme.example>");
     expect(raw).toContain("References: <root@scoutmail.example> <parent@acme.example>");
+    // Exactly one of each header: a folded or duplicated References line would break
+    // some clients' threading.
+    expect(raw.match(/^In-Reply-To:/gm)).toHaveLength(1);
+    expect(raw.match(/^References:/gm)).toHaveLength(1);
     expect(result.threadId).toBe("thread_99");
 
     // Gmail requires the subject to match for a reply to join the thread.
     expect(raw).toContain("Subject: A quick idea for Acme");
+  });
+
+  it("starts a new thread with no In-Reply-To, References or Gmail thread", async () => {
+    server.use(captureSend());
+    const { channel } = makeChannel({ credentials: validCredentials() });
+
+    const result = await channel.send(outbound());
+
+    const raw = decodeRaw(captured?.body.raw);
+    expect(raw).not.toMatch(/^In-Reply-To:/m);
+    expect(raw).not.toMatch(/^References:/m);
+    expect(captured?.body.threadId).toBeUndefined();
+    expect(result.threadId).toBe("thread_1");
+  });
+
+  it("uses the deterministic Message-ID the guard stored, not a random one", async () => {
+    server.use(captureSend());
+    const { channel } = makeChannel({ credentials: validCredentials() });
+
+    const result = await channel.send(outbound({ rfcMessageId: "<scout.deterministic@scoutmail.example>" }));
+
+    expect(result.rfcMessageId).toBe("<scout.deterministic@scoutmail.example>");
+    expect(decodeRaw(captured?.body.raw)).toMatch(/^Message-ID: <scout\.deterministic@scoutmail\.example>$/m);
   });
 
   it("tags a DRY_RUN send as a test and reports the redirect", async () => {

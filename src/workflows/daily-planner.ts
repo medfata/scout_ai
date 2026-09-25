@@ -31,6 +31,8 @@ export interface DailyPlanResult {
   researchRuns: string[];
   /** Review item 1: active/waiting enrollments whose durable run had to be restarted. */
   reconcile: ReconcileSummary;
+  /** Review item B5: the cursor drain that backstops a lost Gmail push. */
+  inbound: InboundBackstopSummary;
   errors: string[];
 }
 
@@ -39,12 +41,14 @@ export async function dailyPlannerWorkflow(): Promise<DailyPlanResult> {
 
   const plan = await planDayStep();
   const reconcile = await reconcileStep();
+  const inbound = await gmailBackstopStep();
   const sourced = await sourceStep(plan.allocations);
   const researchRuns = await researchStep(sourced.created);
   await digestStep({
     plan: { ...plan, allocations: sourced.allocations },
     researchRuns,
     reconcile,
+    inbound,
     planErrors: plan.errors,
   });
   return {
@@ -53,7 +57,8 @@ export async function dailyPlannerWorkflow(): Promise<DailyPlanResult> {
     icps: sourced.allocations,
     researchRuns,
     reconcile,
-    errors: [...plan.errors, ...reconcile.errors, ...sourced.errors],
+    inbound,
+    errors: [...plan.errors, ...reconcile.errors, ...sourced.errors, ...inbound.errors],
   };
 }
 
@@ -76,6 +81,16 @@ interface DayPlan {
 export interface ReconcileSummary {
   checked: number;
   restarted: number;
+  errors: string[];
+}
+
+/** Review item B5: what the daily cursor drain found and how many reply runs it started. */
+export interface InboundBackstopSummary {
+  ran: boolean;
+  stored: number;
+  failed: number;
+  unmatched: number;
+  replyRuns: number;
   errors: string[];
 }
 
@@ -229,19 +244,58 @@ async function researchStep(created: Array<{ contactId: string; icpId: string }>
   return runs;
 }
 
+/**
+ * Review item B5: a lost Gmail push must not lose a reply. The daily heartbeat drains the
+ * mailbox cursor (the same path the push webhook runs) and starts a reply workflow for
+ * every message it stores, so classification and the stop-on-reply hook still happen.
+ * `replyWorkflow` claims each message atomically, so a message that a push already
+ * handled is a no-op.
+ */
+async function gmailBackstopStep(): Promise<InboundBackstopSummary> {
+  "use step";
+
+  const { syncGmailBackstop } = await import("@/src/services/gmail-inbound");
+  const result = await syncGmailBackstop();
+
+  let replyRuns = 0;
+  if (result.ran) {
+    const { replyWorkflow } = await import("./reply");
+    for (const messageId of result.messageIds) {
+      await start(replyWorkflow, [messageId]);
+      replyRuns += 1;
+    }
+  }
+
+  return {
+    ran: result.ran,
+    stored: result.stored,
+    failed: result.failed,
+    unmatched: result.unmatched,
+    replyRuns,
+    errors: result.errors,
+  };
+}
+
 async function digestStep(input: {
   plan: { date: string; budget: number; allocations: Allocation[] };
   researchRuns: string[];
   reconcile: ReconcileSummary;
+  inbound: InboundBackstopSummary;
   planErrors: string[];
 }): Promise<void> {
   "use step";
 
   const settings = await getSettings();
-  const [quotas, pending, tierCounts] = await Promise.all([
+  // Review item B4: the Workflow SDK exposes no event counter and Neon storage is read
+  // from the database, so both figures are estimates the digest must label as such. The
+  // dynamic import keeps this step independent of the metering implementation.
+  const quotaService = await import("@/src/services/quota");
+  const [quotas, pending, tierCounts, workflowEvents, database] = await Promise.all([
     quotaSnapshot(),
     listEnrollmentsForApproval(200),
     tierCountsToday(),
+    quotaService.workflowEventUsage(),
+    quotaService.databaseSizeUsage(),
   ]);
 
   const sections: Digest["sections"] = [];
@@ -267,6 +321,18 @@ async function digestStep(input: {
     ],
   });
 
+  sections.push({
+    heading: "Inbound",
+    lines: [
+      input.inbound.ran
+        ? `Gmail backstop: ${input.inbound.stored} new message(s), ${input.inbound.replyRuns} reply run(s) started.`
+        : "Gmail backstop: no connected mailbox.",
+      ...(input.inbound.unmatched > 0 ? [`${input.inbound.unmatched} message(s) matched no lead.`] : []),
+      ...(input.inbound.failed > 0 ? [`${input.inbound.failed} message(s) failed and were skipped past.`] : []),
+      ...input.inbound.errors.map((error) => `  ${error}`),
+    ],
+  });
+
   if (input.planErrors.length > 0) {
     sections.push({ heading: "Issues", lines: input.planErrors });
   }
@@ -278,7 +344,12 @@ async function digestStep(input: {
 
   sections.push({
     heading: "Quota",
-    lines: quotas.map((quota) => `${quota.resource} (${quota.period}): ${format(quota.used)}/${format(quota.limit)}`),
+    lines: [
+      ...quotas.map((quota) => `${quota.resource} (${quota.period}): ${format(quota.used)}/${format(quota.limit)}`),
+      // Review item B4: both figures are estimates, so the digest says so.
+      `workflow_events (month, estimate): ${format(workflowEvents.used)}/${format(workflowEvents.limit)} (${percent(workflowEvents.used, workflowEvents.limit)}%)`,
+      `database_storage (estimate): ${formatBytes(database.usedBytes)}/${formatBytes(database.limitBytes)} (${percent(database.usedBytes, database.limitBytes)}%)`,
+    ],
   });
 
   await sendDigest({ date: input.plan.date, sections });
@@ -309,4 +380,15 @@ async function tierCountsToday(): Promise<{ A: number; B: number; C: number }> {
 
 function format(value: number): string {
   return value >= 1 ? value.toFixed(2) : value.toFixed(4);
+}
+
+/** Review item B4: the digest labels both metered figures estimates, so show the ratio. */
+function percent(used: number, limit: number): string {
+  return limit > 0 ? ((used / limit) * 100).toFixed(1) : "0.0";
+}
+
+function formatBytes(bytes: number): string {
+  const gigabytes = bytes / 1024 ** 3;
+  if (gigabytes >= 0.01) return `${gigabytes.toFixed(2)} GB`;
+  return `${Math.round(bytes / 1024 ** 2)} MB`;
 }

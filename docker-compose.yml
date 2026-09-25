@@ -1,0 +1,25 @@
+# Local Postgres fixture for the service and workflow time-travel test suites
+# (see docs/testing.md). CI provides the same postgres:17 image as a service
+# container, so local and CI differ only in the connection string.
+#
+# Throwaway data only: the suites truncate every domain table. Never point this
+# at a database you care about. Host port 55432 avoids a Postgres on 5432.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: scout
+      POSTGRES_PASSWORD: scout
+      POSTGRES_DB: scout_test
+    ports:
+      - "55432:5432"
+    volumes:
+      - scout-test-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scout -d scout_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  scout-test-postgres-data:

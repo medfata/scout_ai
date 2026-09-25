@@ -64,6 +64,15 @@ export async function upsertAccount(input: UpsertAccountInput): Promise<Connecte
     type: "account.connected",
     data: { provider: input.provider, kind: input.kind },
   });
+
+  // B3: a mailbox that was paused for bad credentials parks its sequences; reconnecting is
+  // the event that should wake them. Imported dynamically to avoid a module cycle with
+  // `enrollment.ts`, which imports this module for send accounting.
+  if (input.status === "ok") {
+    const { wakeParkedRuns } = await import("./enrollment");
+    await wakeParkedRuns("mailbox_reconnected");
+  }
+
   return row;
 }
 
@@ -162,10 +171,15 @@ export interface SendSlotReservation {
  */
 export async function reserveSendSlot(accountId: string, spacingMs: number, now: Date): Promise<SendSlotReservation> {
   const db = getDb();
+  // Drizzle's postgres-js driver replaces the `timestamptz` serializer with an identity
+  // function, so a raw `Date` inside a `sql` fragment reaches postgres.js unencoded and
+  // throws "The string argument must be … Received an instance of Date". The ISO string
+  // plus the explicit cast is the same value the column encoder would have produced.
+  const isoNow = now.toISOString();
   const [row] = await db
     .update(connectedAccounts)
     .set({
-      nextSendAt: sql`greatest(coalesce(${connectedAccounts.nextSendAt}, ${now}), ${now}) + (${spacingMs}::double precision * interval '1 millisecond')`,
+      nextSendAt: sql`greatest(coalesce(${connectedAccounts.nextSendAt}, ${isoNow}::timestamptz), ${isoNow}::timestamptz) + (${spacingMs}::double precision * interval '1 millisecond')`,
       updatedAt: new Date(),
     })
     .where(eq(connectedAccounts.id, accountId))

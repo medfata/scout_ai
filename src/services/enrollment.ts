@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { start } from "workflow/api";
 
 import { getDb, withTransaction } from "@/src/db/client";
@@ -297,6 +297,44 @@ export async function clearWorkflowRunId(enrollmentId: string, expected: string 
     .where(and(eq(enrollments.id, enrollmentId), matches));
 }
 
+/** Review item B3: the conditions that park a run instead of polling it hourly. */
+export type ParkWakeReason = "settings_saved" | "mailbox_reconnected" | "kill_switch_off";
+
+export interface WakeParkedResult {
+  checked: number;
+  resumed: number;
+}
+
+/**
+ * Review item B3: turning the kill switch off, saving settings or reconnecting the
+ * mailbox must wake the runs parked on those blocks. Every live enrollment gets a
+ * `resume` lead event; a run that is sleeping normally just recomputes the same slot,
+ * which is harmless, and there is no park column to query instead.
+ *
+ * Callers (the settings and mailbox paths, owned elsewhere) call this and ignore the
+ * result; a failure to wake one enrollment must never fail the owner's save.
+ */
+export async function wakeParkedRuns(reason: ParkWakeReason): Promise<WakeParkedResult> {
+  const rows = await listEnrollmentsForReconcile(200);
+  const { resumeLeadEvent } = await import("@/src/services/hooks");
+
+  let resumed = 0;
+  for (const enrollment of rows) {
+    const result = await resumeLeadEvent(enrollment.id, { type: "resume" });
+    if (result.resumed) resumed += 1;
+  }
+
+  await recordActivity({
+    actor: "system",
+    entityType: "enrollment",
+    entityId: null,
+    type: "enrollment.transition",
+    data: { reason: "parked_runs_woken", trigger: reason, checked: rows.length, resumed },
+  });
+
+  return { checked: rows.length, resumed };
+}
+
 // ---------------------------------------------------------------------------
 // Sequence plan (read side, used by the sequence workflow's steps)
 // ---------------------------------------------------------------------------
@@ -318,19 +356,33 @@ export interface SequencePlan {
   steps: SequencePlanStep[];
   /** True when an outbound message for this enrollment has actually been sent. */
   hasSentAnchor: boolean;
+  /** Review item B1: the sent message every later step's day offset is measured from. */
+  sendAnchor: SendAnchor | null;
   /** Section 0 locks v1 to assisted; the flag comes from env, never from the database. */
   linkedinMode: "assisted" | "automated";
 }
 
 /**
- * Review item 4: a `thread: "same"` follow-up is only eligible when the enrollment has a
- * sent anchor. Read once here, next to the lead, so the workflow and the send guard see
- * the same eligibility.
+ * Review item B1: step day offsets are relative to the first email that actually left,
+ * not to `enrollments.started_at`. A first touch delayed by a full daily cap must not be
+ * followed minutes later by the "day 3" email.
  */
-export async function hasSentAnchor(enrollmentId: string): Promise<boolean> {
+export interface SendAnchor {
+  /** Zero-based step index of the first outbound message that was sent. */
+  step: number;
+  /** `sentAt` when the provider recorded one, otherwise the reserved `scheduledFor`. */
+  at: Date;
+}
+
+/**
+ * Review item 4: a `thread: "same"` follow-up is only eligible when the enrollment has a
+ * sent anchor. Review item B1: the same row is the time anchor for every day offset.
+ * Read once here, next to the lead, so the workflow and the send guard see the same one.
+ */
+export async function getSendAnchor(enrollmentId: string): Promise<SendAnchor | null> {
   const db = getDb();
   const [row] = await db
-    .select({ id: messages.id })
+    .select({ step: messages.step, sentAt: messages.sentAt, scheduledFor: messages.scheduledFor })
     .from(messages)
     .where(
       and(
@@ -339,8 +391,16 @@ export async function hasSentAnchor(enrollmentId: string): Promise<boolean> {
         eq(messages.status, "sent"),
       ),
     )
+    .orderBy(asc(messages.step), asc(messages.sentAt))
     .limit(1);
-  return Boolean(row);
+
+  if (!row) return null;
+  const at = row.sentAt ?? row.scheduledFor;
+  return at ? { step: row.step, at } : null;
+}
+
+export async function hasSentAnchor(enrollmentId: string): Promise<boolean> {
+  return (await getSendAnchor(enrollmentId)) !== null;
 }
 
 export async function loadSequencePlan(enrollmentId: string): Promise<SequencePlan> {
@@ -355,7 +415,8 @@ export async function loadSequencePlan(enrollmentId: string): Promise<SequencePl
   // Automated LinkedIn is not part of v1; assisted mode produces owner tasks instead,
   // and the task queue ships in phase 6.
   const linkedinAutomationEnabled = env.LINKEDIN_MODE === "automated";
-  const sent = await hasSentAnchor(enrollmentId);
+  const sendAnchor = await getSendAnchor(enrollmentId);
+  const sent = sendAnchor !== null;
   // Section 9: countries that require a form of consent are excluded from cold email. The
   // lookup normalises both sides, so a stored "Germany" still matches the ISO default "DE"
   // (review item 17) — a raw string compare silently let those leads through.
@@ -376,7 +437,7 @@ export async function loadSequencePlan(enrollmentId: string): Promise<SequencePl
     }),
   }));
 
-  return { enrollment, sequence, lead, steps, hasSentAnchor: sent, linkedinMode: env.LINKEDIN_MODE };
+  return { enrollment, sequence, lead, steps, hasSentAnchor: sent, sendAnchor, linkedinMode: env.LINKEDIN_MODE };
 }
 
 export function stepAt(sequence: SequenceTemplate, index: number) {

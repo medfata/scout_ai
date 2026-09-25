@@ -24,11 +24,13 @@ import { loadSequencePlan } from "./enrollment";
 import {
   claimMessageForSend,
   getMessageByIdempotencyKey,
+  getThreadAnchor,
   hasUnresolvedInbound,
   listSentRfcMessageIds,
   markMessageFailed,
   markMessageSent,
   releaseMessage,
+  storeMessageSendSlot,
   type MarkSentInput,
 } from "./messages";
 import { consumeSendCounter, getSendCounters, nextCounterDayStart, releaseSendCounter } from "./quota";
@@ -202,6 +204,9 @@ export async function sendMessage(input: SendMessageInput): Promise<SendOutcome>
     stepKind,
     contactId: plan.lead.contactId,
     messageId: message.id,
+    // B2: the slot this message already reserved, if any. The message row is read before
+    // the guard's side effects, so the value is the one the last attempt stored.
+    scheduledFor: message.scheduledFor,
     now,
     // A message that was already `sending` consumed its counters on the first attempt
     // (or was never sent at all); consuming again would double-count a single email.
@@ -236,7 +241,7 @@ export async function sendMessage(input: SendMessageInput): Promise<SendOutcome>
 
   // The port does not declare `rfcMessageId` yet; an extra property on a variable (not a
   // fresh object literal) is assignable, and the Gmail adapter reads it structurally.
-  const outbound: OutboundMessage & { rfcMessageId: string } = {
+  const outbound: OutboundMessage = {
     to: input.channel === "email" ? redirect ?? plan.lead.email! : plan.lead.linkedinUrl!,
     // Review item 21: the test tag has to be visible in the recipient line, not only in a
     // header, so an accidental production dry-run is obvious in the thread list.
@@ -460,7 +465,11 @@ async function resolveThreading(
 
   const prior = await listSentRfcMessageIds(enrollmentId);
   const anchor = prior.length > 0 ? prior[prior.length - 1] ?? null : null;
-  return { threadId: message.threadId, inReplyTo: anchor, references: prior };
+  // Review item 10: a follow-up draft carries no `threadId` of its own, so the thread has
+  // to come from the last sent message. Without this the Gmail adapter starts a brand new
+  // thread and the follow-up lands outside the conversation the prospect already has.
+  const anchorThread = await getThreadAnchor(enrollmentId);
+  return { threadId: message.threadId ?? anchorThread.threadId, inReplyTo: anchor, references: prior };
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +483,8 @@ interface CapacityContext {
   stepKind: StepKind;
   contactId: string;
   messageId: string;
+  /** B2: the slot already stored on this message (`messages.scheduled_for`), if any. */
+  scheduledFor: Date | null;
   now: Date;
   /** True when a previous attempt already consumed this message's counters. */
   alreadyConsumed: boolean;
@@ -491,9 +502,12 @@ interface CapacityGate {
  * `UPDATE send_counters … WHERE count < cap RETURNING`)." Both the `new` and the `total`
  * bucket are consumed, and both are released if the send never leaves the guard.
  *
- * Review item 11 piggybacks here because pacing is the same kind of mailbox-wide limit:
- * `next_send_at` is reserved atomically so thirty enrollments waking at 08:30 get thirty
- * distinct slots instead of a burst.
+ * Review item B2: pacing lives here too, but nobody wakes on the mailbox's shared
+ * `next_send_at` any more. A message that has no slot reserves one atomically and the
+ * reservation is stored on the message (`messages.scheduled_for`), so thirty enrollments
+ * waking at 08:30 each own a distinct slot instead of colliding on one instant. Once a
+ * message's own slot has arrived it sends without re-reading `next_send_at`, which by then
+ * belongs to a later message's reservation.
  */
 async function checkCapacity(context: CapacityContext): Promise<CapacityGate> {
   if (context.channel !== "email") return {};
@@ -535,29 +549,36 @@ async function checkCapacity(context: CapacityContext): Promise<CapacityGate> {
     }
   }
 
-  // Review item 11: if the mailbox already has a future slot, pause without touching it;
-  // otherwise reserve the slot atomically. Reserving only when the slot is free keeps a
-  // retry from pushing the mailbox's queue further out.
-  if (account.nextSendAt && account.nextSendAt.getTime() > context.now.getTime()) {
+  // Review item B2: a message whose own slot has not arrived waits for it; the slot was
+  // reserved on an earlier attempt and is stored on the message, so this attempt must not
+  // touch `next_send_at` (that belongs to whatever reserved after us).
+  const ownedSlot = context.scheduledFor;
+  if (ownedSlot && ownedSlot.getTime() > context.now.getTime()) {
     return {
-      outcome: block("sending_window", `The mailbox is paced; its next send slot is ${account.nextSendAt.toISOString()}.`, {
+      outcome: block("pacing", `This message's reserved send slot is ${ownedSlot.toISOString()}.`, {
         messageId: context.messageId,
-        nextAt: account.nextSendAt,
+        nextAt: ownedSlot,
       }),
     };
   }
 
-  const spacing = spacingMinutesFor("email", isNew ? "new" : "followup");
-  const reservation = await reserveSendSlot(account.id, jitterMs(spacing.min, spacing.max), context.now);
-  if (reservation.slotAt.getTime() > context.now.getTime()) {
-    // Lost the race for "now": another enrollment reserved the earlier slot.
-    return {
-      outcome: block(
-        "sending_window",
-        `Another enrollment holds the mailbox's next send slot (${reservation.slotAt.toISOString()}).`,
-        { messageId: context.messageId, nextAt: reservation.slotAt },
-      ),
-    };
+  if (!ownedSlot) {
+    // No slot yet: take one atomically. `reserveSendSlot` serialises on the mailbox row, so
+    // two enrollments waking together get consecutive slots rather than the same one.
+    const spacing = spacingMinutesFor("email", isNew ? "new" : "followup");
+    const reservation = await reserveSendSlot(account.id, jitterMs(spacing.min, spacing.max), context.now);
+    // Store before deciding. If a racing attempt on the same message won the conditional
+    // update, this returns that attempt's slot and we wait for it instead of consuming a
+    // second slot from the mailbox queue.
+    const slotAt = await storeMessageSendSlot(context.messageId, reservation.slotAt);
+    if (slotAt.getTime() > context.now.getTime()) {
+      return {
+        outcome: block("pacing", `The mailbox reserved this message's send slot for ${slotAt.toISOString()}.`, {
+          messageId: context.messageId,
+          nextAt: slotAt,
+        }),
+      };
+    }
   }
 
   // The consume half of rule 5 is the last side effect before the claim (review item 6).

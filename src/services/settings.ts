@@ -80,6 +80,14 @@ export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
   });
 
   if (!updated) throw new Error("Settings update matched no row.");
+
+  // B3: a parked sequence (kill switch on, config incomplete, mailbox paused) waits until
+  // the next sending window. Saving settings is one of the three events that should wake it
+  // immediately instead — the owner just fixed whatever was wrong. Imported dynamically
+  // because `enrollment.ts` imports this module.
+  const { wakeParkedRuns } = await import("./enrollment");
+  await wakeParkedRuns(patch.killSwitch === false ? "kill_switch_off" : "settings_saved");
+
   return updated;
 }
 

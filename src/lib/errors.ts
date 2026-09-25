@@ -117,6 +117,12 @@ export type SendGuardRule =
   | "unclassified_inbound"
   | "daily_cap"
   | "sending_window"
+  /**
+   * Review item B2: the mailbox is paced. The message owns a reserved slot that has not
+   * arrived yet; it is a distinct rule from `sending_window` so the workflow can tell a
+   * per-enrollment slot from an out-of-hours block.
+   */
+  | "pacing"
   | "not_approved"
   | "idempotency"
   /** Review item 21: DRY_RUN is on but there is nowhere safe to redirect to. */

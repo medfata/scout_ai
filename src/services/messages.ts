@@ -167,6 +167,29 @@ export interface MarkSentInput {
   sentAt: Date;
 }
 
+/**
+ * Review item B2: stores the mailbox send slot reserved for this message on the message
+ * itself (`messages.scheduled_for`, section 5), and returns whichever slot the message
+ * owns. The conditional update makes the first writer win: a retried or racing attempt on
+ * the same message waits for the stored slot instead of consuming a second one from the
+ * mailbox's queue.
+ */
+export async function storeMessageSendSlot(messageId: string, slotAt: Date): Promise<Date> {
+  const db = getDb();
+  const [stored] = await db
+    .update(messages)
+    .set({ scheduledFor: slotAt, updatedAt: new Date() })
+    .where(and(eq(messages.id, messageId), isNull(messages.scheduledFor)))
+    .returning({ scheduledFor: messages.scheduledFor });
+
+  if (stored?.scheduledFor) return stored.scheduledFor;
+
+  const existing = await getMessage(messageId);
+  if (!existing) throw new Error(`Message ${messageId} not found while storing its send slot.`);
+  if (!existing.scheduledFor) throw new Error(`Message ${messageId} was not given a send slot.`);
+  return existing.scheduledFor;
+}
+
 export async function markMessageSent(messageId: string, input: MarkSentInput): Promise<Message> {
   const db = getDb();
   const [updated] = await db

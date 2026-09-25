@@ -1,13 +1,14 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, sql } from "drizzle-orm";
 
 import { getDb } from "@/src/db/client";
-import { sendCounters } from "@/src/db/schema";
+import { activityEvents, sendCounters } from "@/src/db/schema";
 import { dateOnlyInZone, instantForDateOnly } from "@/src/lib/time-windows";
 import { QuotaExceededError } from "@/src/lib/errors";
 import { getEnv } from "@/src/lib/env";
 import { getSettings } from "./settings";
-import { countActivity, recordActivity, sumActivityNumeric } from "./activity";
-import { MONTHLY_ALLOWANCES, type QuotaResource, quotaRemaining } from "@/src/domain/quotas";
+import { countActivity, recordActivity, sumActivityNumeric, type ActivityType } from "./activity";
+import { notifyQuota } from "./notifications";
+import { MONTHLY_ALLOWANCES, QUOTA_ALERT_THRESHOLD, type QuotaResource, quotaRemaining } from "@/src/domain/quotas";
 import type { SendBucket } from "@/src/domain/types";
 
 /**
@@ -178,6 +179,134 @@ export async function assertNewProspectQuota(now: Date = new Date()): Promise<vo
   if (used >= limit) {
     throw new QuotaExceededError("new_prospects", used, limit, "day");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Workflow events (section 0: 50,000/month, alert at 80%) — review item B4
+// ---------------------------------------------------------------------------
+
+/** Section 0: the Neon free plan allows 0.5 GB before storage must be pruned. */
+export const DATABASE_SIZE_LIMIT_BYTES = Math.round(0.5 * 1024 ** 3);
+
+export interface WorkflowEventUsage {
+  used: number;
+  limit: number;
+  /** Always true today: the Workflow SDK exposes no usage counter (see the model below). */
+  estimated: boolean;
+}
+
+export interface DatabaseSizeUsage {
+  usedBytes: number;
+  limitBytes: number;
+}
+
+/**
+ * Review item B4: the Workflow SDK exposes no usage counter (its observability docs cover
+ * inspecting runs, not metering, and Vercel does not hand the app a Workflow-event count),
+ * so Scout estimates from the two things it does record in `activity_events`: the durable
+ * runs it starts and the steps that wrote an activity row.
+ *
+ *   estimate = runs × 4 + logged steps × 6
+ *
+ * The Workflow event log charges per `step_created`/`step_started`/`step_completed` and per
+ * wait, and Scout's send loop runs about five steps plus one sleep per send — but only two
+ * or three of those steps write an activity row. `6` is that shape, rounded up; `4` covers
+ * `run_created`/`run_started`/`run_completed` bookkeeping per run. The figure is a model,
+ * not a measurement, which is why the dashboard and the digest label it an estimate.
+ */
+const WORKFLOW_EVENTS_PER_LOGGED_STEP = 6;
+const WORKFLOW_EVENTS_PER_RUN = 4;
+
+/** Activity types recorded once when a durable run starts (or immediately before it does). */
+const WORKFLOW_RUN_MARKERS: ActivityType[] = [
+  "enrollment.created",
+  "research.started",
+  "reply.received",
+  "cron.daily_started",
+];
+
+export async function workflowEventUsage(): Promise<WorkflowEventUsage> {
+  const month = startOfMonth(new Date());
+  const [loggedSteps, runs] = await Promise.all([countWorkflowLoggedSteps(month), countWorkflowRuns(month)]);
+
+  const used = loggedSteps * WORKFLOW_EVENTS_PER_LOGGED_STEP + runs * WORKFLOW_EVENTS_PER_RUN;
+  const limit = MONTHLY_ALLOWANCES.workflowEvents;
+
+  await alertOnApproachingLimit("workflow_events", used, limit);
+  return { used, limit, estimated: true };
+}
+
+export async function databaseSizeUsage(): Promise<DatabaseSizeUsage> {
+  const db = getDb();
+  const result = await db.execute(sql`select pg_database_size(current_database()) as bytes`);
+  const row = extractRows(result)[0] as { bytes: number | string } | undefined;
+  const usedBytes = Number(row?.bytes ?? 0);
+
+  await alertOnApproachingLimit("database_storage", usedBytes, DATABASE_SIZE_LIMIT_BYTES);
+  return { usedBytes, limitBytes: DATABASE_SIZE_LIMIT_BYTES };
+}
+
+/** Only the two resources above are metered here; the day counters never pass through. */
+type MeteredResource = Extract<QuotaResource, "workflow_events" | "database_storage">;
+
+/**
+ * Section 0: "alert at 80%", at most once a day per resource. The append-only log is the
+ * only state Scout keeps for this: a `quota.warning` row for the same resource since the
+ * owner's midnight means the alert already went out. The row is written before the alert,
+ * so a crash between the two cannot turn into a duplicate later the same day.
+ */
+async function alertOnApproachingLimit(resource: MeteredResource, used: number, limit: number): Promise<void> {
+  if (limit <= 0 || used / limit < QUOTA_ALERT_THRESHOLD) return;
+
+  const { timezone } = await getSettings();
+  const since = startOfDay(new Date(), timezone);
+  if (await warnedToday(resource, since)) return;
+
+  await recordActivity({
+    actor: "system",
+    entityType: "quota",
+    type: "quota.warning",
+    data: { resource, used, limit, period: "month" },
+  });
+  await notifyQuota(resource, used, limit, "month");
+}
+
+async function warnedToday(resource: MeteredResource, since: Date): Promise<boolean> {
+  const db = getDb();
+  const [row] = await db
+    .select({ id: activityEvents.id })
+    .from(activityEvents)
+    .where(
+      and(
+        eq(activityEvents.type, "quota.warning"),
+        gte(activityEvents.at, since),
+        sql`${activityEvents.data} ->> 'resource' = ${resource}`,
+      ),
+    )
+    .limit(1);
+  return Boolean(row);
+}
+
+/**
+ * Every `system`/`ai` row was written from inside a `"use step"` (or by the AI layer such a
+ * step calls). Owner server actions record as `owner` and never run in a workflow.
+ */
+async function countWorkflowLoggedSteps(since: Date): Promise<number> {
+  const db = getDb();
+  const [row] = await db
+    .select({ value: count() })
+    .from(activityEvents)
+    .where(and(gte(activityEvents.at, since), inArray(activityEvents.actor, ["system", "ai"])));
+  return Number(row?.value ?? 0);
+}
+
+async function countWorkflowRuns(since: Date): Promise<number> {
+  const db = getDb();
+  const [row] = await db
+    .select({ value: count() })
+    .from(activityEvents)
+    .where(and(gte(activityEvents.at, since), inArray(activityEvents.type, WORKFLOW_RUN_MARKERS)));
+  return Number(row?.value ?? 0);
 }
 
 // ---------------------------------------------------------------------------

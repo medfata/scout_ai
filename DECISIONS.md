@@ -188,6 +188,20 @@ switch that blocks all cold sends until you turn it off.**
 that key silently loses the do-not-contact list. Add a dedicated `SUPPRESSION_HASH_KEY`, or
 accept the coupling and never rotate `ENCRYPTION_KEY`?
 
+**Q13 - Company country unknown (review item B7).** Section 9 excludes countries that require
+consent from cold email. Today, when a contact's company country is unknown, Scout allows the
+email — the permissive default. The review proposes the opposite: **block email and flag the
+lead in the inbox until the country is known.** Confirm which you want. (Blocking is safer and
+costs you a manual country lookup per lead; allowing is faster and risks emailing a German or
+Canadian company.)
+
+**Q14 - Do unapproved first-touch drafts expire? (review item B7).** The plan's approval window
+is 3 days for a *step* in a running sequence. For the very first touch — a draft sitting in the
+inbox before any sequence has started — nothing expires it today, so a stale draft can be
+approved weeks later against a brief that has gone cold. Options: (a) expire after 3 days and
+let the daily planner re-draft from fresh research; (b) keep drafts indefinitely and show their
+age in the inbox; (c) expire after a longer window (7 or 14 days). **Proposed default: (a).**
+
 ---
 
 ## D10 - D1 was not an owner decision, and gates now go in order (2026-09-25)
@@ -250,10 +264,11 @@ env validation instead.
 
 ---
 
-## Build state (2026-09-25, after plan review)
+## Build state (2026-09-25, after the test stage)
 
-Verified: `pnpm typecheck`, `pnpm lint`, `pnpm test` (94 tests) and `pnpm build` pass.
-**That is not the same as a phase gate.** Gates, honestly:
+Verified on this commit: `pnpm typecheck`, `pnpm lint`, `pnpm test` (**187 passed**) and
+`pnpm test:workflows` (**15 passed**) — both against a real `postgres:17`, both also green in
+CI — plus a production build.
 
 | Phase | Code | Gate |
 | --- | --- | --- |
@@ -261,15 +276,22 @@ Verified: `pnpm typecheck`, `pnpm lint`, `pnpm test` (94 tests) and `pnpm build`
 | 1. Offer and ICP studio | Built | ⛔ `evals/` empty — no promptfoo golden set. |
 | 2. Sourcing and enrichment | Built | ⛔ fixtures are documented shapes, not recordings (D9). |
 | 3. Research, drafting, approval | Built | ⛔ same promptfoo gap. |
-| 4. Email sending | Built, **broken as reviewed** | ⛔ **not met** — no guard-rule tests; sequencer never started; `waiting → active` bug. |
-| 5. Sequences and replies | Built, **broken as reviewed** | ⛔ **not met** — no time-travel tests. |
+| 4. Email sending | Built | ✅ **met in code** — every guard rule has a test named after it, and every failure mode the review listed is covered. ⛔ **the preview demonstration is still outstanding**: it needs the owner (section C). |
+| 5. Sequences and replies | Built | ✅ **met** — all nine time-travel scenarios pass, twice consecutively. |
 | 6. LinkedIn | Not built | Out of scope. |
 | 7. Analytics and learning | Not built | Out of scope. |
 | 8. Hardening | Not built | Out of scope. |
 
-**Still missing, tracked as P0:** `/settings` (a phase 0 deliverable), `/dashboard` and
-`/replies` (404 from the nav), `users.watch` registration, recipient timezone, warmup-stage
-advance, workflow-event and database-size metering.
+**Test suite as it stands:** 187 unit/domain/service tests (51 pure domain, 40 guard, plus
+adapters, agents and services) and 15 workflow time-travel tests. Both suites skip cleanly
+without a database rather than failing, so a laptop without Docker still gets a useful run.
+
+**Still outstanding for gate 4:** the three preview demonstrations in
+`docs/first-send-checklist.md` section 6, recorded below once they happen.
+
+**Known limitation carried forward:** `messages.contact_id` is `NOT NULL`, so mail from an
+address Scout does not know is stored in `webhook_events` and alerted, but cannot appear on
+`/replies`. Making the column nullable is what would surface those.
 
 ---
 

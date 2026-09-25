@@ -27,6 +27,10 @@ import { recordActivity } from "./activity";
  *    mailer-daemon reaches the classifier, and an unmatched sender is stored and alerted
  *    instead of throwing.
  *
+ * Review item B5 adds the other direction: a message that fails permanently is recorded in
+ * `webhook_events` with its error, the owner is alerted, and the cursor advances past it.
+ * `syncGmailBackstop()` re-drains the cursor from the daily cron for a lost push.
+ *
  * The mailbox credential handling mirrors `src/adapters/channels/gmail.ts` on purpose: one
  * adapter sends, one service reads, and both go through `readAccountCredentials` so a
  * rotated `ENCRYPTION_KEY` marks the account for reconnect instead of failing silently.
@@ -57,6 +61,11 @@ export interface GmailIngestResult {
   skipped: number;
   /** Sender matched no thread and no contact; kept as a raw `webhook_events` row (review item 14). */
   unmatched: number;
+  /**
+   * Review item B5: messages that failed permanently, were recorded in `webhook_events`
+   * with their error and skipped past, so one poison message cannot pin the cursor.
+   */
+  failed: number;
   errors: string[];
   /** Stored inbound message ids, so the caller can start a reply workflow for each. */
   messageIds: string[];
@@ -64,24 +73,51 @@ export interface GmailIngestResult {
   fullSync: boolean;
 }
 
+/** Review item B5: the daily cron's backstop result; `ran: false` is a no-op, not an error. */
+export interface GmailBackstopResult extends GmailIngestResult {
+  ran: boolean;
+}
+
 export async function ingestGmailHistory(historyId: string): Promise<GmailIngestResult> {
-  const result: GmailIngestResult = {
+  const mailbox = await loadMailboxClient();
+  if (!mailbox) {
+    return {
+      ...emptyIngestResult(),
+      errors: ["No connected mailbox; the push notification was stored unprocessed."],
+    };
+  }
+  return ingestFromMailbox(historyId, mailbox);
+}
+
+/**
+ * Review item B5: "Add a cursor-based sync to the daily cron as a backstop for lost
+ * pushes." Gmail Pub/Sub can drop a notification (subscription expiry, a deploy between
+ * pushes); the cursor is the source of truth, so the daily heartbeat drains everything
+ * since `connected_accounts.last_history_id` even when no push ever arrived. A mailbox
+ * that is not connected is a no-op: the digest reports `ran: false`.
+ */
+export async function syncGmailBackstop(): Promise<GmailBackstopResult> {
+  const mailbox = await loadMailboxClient();
+  if (!mailbox) return { ran: false, ...emptyIngestResult() };
+  return { ran: true, ...(await ingestFromMailbox("backstop", mailbox)) };
+}
+
+function emptyIngestResult(): GmailIngestResult {
+  return {
     mailbox: null,
     fetched: 0,
     stored: 0,
     skipped: 0,
     unmatched: 0,
+    failed: 0,
     errors: [],
     messageIds: [],
     fullSync: false,
   };
+}
 
-  const mailbox = await loadMailboxClient();
-  if (!mailbox) {
-    result.errors.push("No connected mailbox; the push notification was stored unprocessed.");
-    return result;
-  }
-  result.mailbox = mailbox.handle;
+async function ingestFromMailbox(historyId: string, mailbox: MailboxClient): Promise<GmailIngestResult> {
+  const result: GmailIngestResult = { ...emptyIngestResult(), mailbox: mailbox.handle };
 
   const gmail = google.gmail({ version: "v1", auth: mailbox.auth });
 
@@ -119,19 +155,24 @@ export async function ingestGmailHistory(historyId: string): Promise<GmailIngest
     }
   }
 
+  let failedNew = 0;
   for (const id of dedupe(candidateIds)) {
     try {
       if (await ingestMessage(gmail, id, mailbox, result)) {
         unmatchedNew += 1;
       }
     } catch (error) {
-      result.errors.push(reasonOf(error));
+      // Review item B5: a message that fails permanently is recorded in `webhook_events`
+      // with its error and skipped past. Only a listing-level failure (above) keeps the
+      // cursor; otherwise one poison message would block every later reply forever.
+      const reason = reasonOf(error);
+      result.failed += 1;
+      if (await recordFailedMessage(mailbox, id, reason)) failedNew += 1;
     }
   }
 
-  // Advance only after a clean pass. An error leaves the cursor where it was, so the next
-  // notification re-lists the same window; `recordInboundMessage` dedupes by provider
-  // message id, which makes that replay harmless.
+  // Advance after a clean *listing* pass. The cursor is the source of truth for pushes
+  // (review item 13), and message-level failures no longer pin it (review item B5).
   if (result.errors.length === 0 && advancedTo) {
     await setLastHistoryId(mailbox.id, advancedTo);
   }
@@ -140,6 +181,9 @@ export async function ingestGmailHistory(historyId: string): Promise<GmailIngest
   // put hundreds of messages into the owner's chat.
   if (unmatchedNew > 0) {
     await alertUnmatchedInbound(unmatchedNew);
+  }
+  if (failedNew > 0) {
+    await alertIngestFailures(failedNew);
   }
 
   await recordActivity({
@@ -155,6 +199,7 @@ export async function ingestGmailHistory(historyId: string): Promise<GmailIngest
       stored: result.stored,
       skipped: result.skipped,
       unmatched: result.unmatched,
+      failed: result.failed,
     },
   });
 
@@ -399,6 +444,50 @@ async function alertUnmatchedInbound(count: number): Promise<void> {
     kind: "error",
     title: count === 1 ? "An inbound email could not be matched to a lead" : `${count} inbound emails could not be matched to a lead`,
     body: "They arrived in the sending mailbox and matched no thread and no contact. They are stored as unmatched events; open the mailbox if any looks like a reply.",
+    url: "/replies",
+    data: { count },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Permanently failed messages (review item B5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Review item B5: a message that fails permanently must not pin the ingest cursor. The
+ * raw event table is section 8's store for inbound events with an error column, so the
+ * failure is recorded there (`processed_at` set, `error` filled) and the cursor advances
+ * past it. The provider message id is safe to store; the error is truncated and must
+ * never contain a body or an address (section 10 rule 11).
+ *
+ * Returns false when the row already existed, so a replay does not alert twice.
+ */
+async function recordFailedMessage(mailbox: MailboxClient, messageId: string, error: string): Promise<boolean> {
+  const stored = await storeWebhookEvent({
+    provider: "gmail",
+    externalId: `failed:${messageId}`,
+    eventType: "gmail.ingest_failed",
+    payload: { providerMessageId: messageId, error },
+  });
+
+  if (stored.duplicate) return false;
+  await markWebhookProcessed(stored.id, error);
+
+  await recordActivity({
+    actor: "system",
+    entityType: "gmail",
+    entityId: mailbox.id,
+    type: "system.error",
+    data: { providerMessageId: messageId, reason: error },
+  });
+  return true;
+}
+
+async function alertIngestFailures(count: number): Promise<void> {
+  await notifyOwner({
+    kind: "error",
+    title: count === 1 ? "An inbound email could not be processed" : `${count} inbound emails could not be processed`,
+    body: "Scout recorded them in the webhook log with their errors and moved past them, so later replies are still ingested. Open the mailbox if one of them looks important.",
     url: "/replies",
     data: { count },
   });

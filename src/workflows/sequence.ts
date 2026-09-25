@@ -13,7 +13,7 @@ import {
   type SequenceStep,
 } from "@/src/domain";
 import type { LeadEvent } from "@/src/domain/types";
-import { isScoutError } from "@/src/lib/errors";
+import { isScoutError, type SendGuardRule } from "@/src/lib/errors";
 import { getEnv } from "@/src/lib/env";
 import { approvalToken, idempotencyKey, leadEventToken } from "@/src/lib/ids";
 import {
@@ -65,10 +65,18 @@ const MAX_LOOP_ITERATIONS = 120;
  * Review item 9: a guard block pauses a run, it never ends it. Every pause writes a real
  * instant to `nextActionAt`, so none of these delays can produce a busy loop.
  */
-const KILL_SWITCH_RETRY_MS = 60 * 60 * 1000;
 const UNCLASSIFIED_INBOUND_RETRY_MS = 15 * 60 * 1000;
 const SEND_RETRY_MS = 15 * 60 * 1000;
 const BLOCK_RETRY_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Review item B3: these blocks are fixed by the owner, not by waiting a few minutes, so
+ * they park the run at the next sending window instead of polling hourly. Turning the
+ * kill switch off, saving settings or reconnecting the mailbox calls
+ * `wakeParkedRuns()`, which interrupts the park early with a `resume` lead event.
+ */
+const PARK_RULES: ReadonlySet<SendGuardRule> = new Set(["kill_switch", "config_incomplete", "dry_run_unconfigured"]);
 
 export type SequenceResult =
   | { status: "completed"; reason: string }
@@ -361,8 +369,14 @@ async function nextSendSlotStep(enrollmentId: string, index: number): Promise<Sl
 
   const settings = await getSettings();
   const now = new Date();
-  const startedAt = enrollment.startedAt ?? enrollment.createdAt;
-  const dayTarget = new Date(startedAt.getTime() + step.dayOffset * 24 * 60 * 60 * 1000);
+  // Review item B1: every step's day offset is measured from the first message that
+  // actually left, not from `enrollments.started_at`. A first touch delayed by a full
+  // daily cap must not be followed minutes later by the "day 3" email. Before any message
+  // has sent, the enrollment's start is still the only anchor there is.
+  const anchor = plan.sendAnchor;
+  const anchorOffset = anchor ? (getStep(sequence, anchor.step)?.dayOffset ?? 0) : 0;
+  const base = anchor ? anchor.at : (enrollment.startedAt ?? enrollment.createdAt);
+  const dayTarget = new Date(base.getTime() + (step.dayOffset - anchorOffset) * DAY_MS);
 
   const nextActionAt = enrollment.nextActionAt && enrollment.nextActionAt > now ? enrollment.nextActionAt : now;
   const earliest = dayTarget > nextActionAt ? dayTarget : nextActionAt;
@@ -436,6 +450,8 @@ async function applyEventStep(enrollmentId: string, event: LeadEvent): Promise<E
       return { stop: false, reason: decision.reason };
     }
     case "continue":
+      // `auto_reply`, an accepted invite and a `resume` from `wakeParkedRuns` all keep the
+      // run alive; the caller recomputes the slot from `nextActionAt` and the day offset.
       return { stop: false, reason: decision.reason };
   }
 }
@@ -551,6 +567,12 @@ async function sendStep(enrollmentId: string, index: number): Promise<SendOutcom
       return { action: "skip", reason: "send_failed" };
     case "blocked": {
       const nextAt = outcome.nextAt && outcome.nextAt.getTime() > Date.now() ? outcome.nextAt : null;
+      if (PARK_RULES.has(outcome.rule)) {
+        // Review item B3: an owner-fixable block parks the run until the next sending
+        // window. `wakeParkedRuns()` interrupts the park as soon as the owner fixes it.
+        await parkUntilNextWindowStep(enrollmentId, index);
+        return { action: "retry", reason: outcome.rule };
+      }
       switch (outcome.rule) {
         case "suppressed":
           await stopEnrollment(enrollmentId, "suppressed");
@@ -558,12 +580,14 @@ async function sendStep(enrollmentId: string, index: number): Promise<SendOutcom
         case "unclassified_inbound":
           // Section 7: "blocks further sends" until the classifier resolves it. Stopping
           // here would break out-of-office rescheduling (review item 9), so pause and
-          // let the reply workflow's hook decide.
+          // let the reply workflow's hook decide. Review item B3 keeps this at 15 minutes:
+          // classification is a short, in-flight state.
           await updateNextAction(enrollmentId, new Date(Date.now() + UNCLASSIFIED_INBOUND_RETRY_MS));
           return { action: "retry", reason: "unclassified_inbound" };
-        case "kill_switch":
-          await updateNextAction(enrollmentId, new Date(Date.now() + KILL_SWITCH_RETRY_MS));
-          return { action: "retry", reason: "kill_switch" };
+        case "pacing":
+          // Review item B2: the message owns the slot; wait for it, never push it later.
+          await updateNextAction(enrollmentId, nextAt ?? new Date(Date.now() + SEND_RETRY_MS));
+          return { action: "retry", reason: "pacing" };
         case "sending_window":
           await updateNextAction(enrollmentId, nextAt ?? new Date(Date.now() + SEND_RETRY_MS));
           return { action: "retry", reason: "sending_window" };
@@ -577,8 +601,7 @@ async function sendStep(enrollmentId: string, index: number): Promise<SendOutcom
         default:
           // Review item 9: blocks pause, never terminate. Only suppression, a human
           // reply, a bounce and an opt-out end a sequence; `enrollment_status`,
-          // `not_approved`, `idempotency`, `config_incomplete` and `dry_run_unconfigured`
-          // all wait for the condition to change.
+          // `not_approved` and `idempotency` wait for the condition to change.
           await updateNextAction(enrollmentId, nextAt ?? new Date(Date.now() + BLOCK_RETRY_MS));
           return { action: "retry", reason: outcome.rule };
       }
@@ -613,6 +636,36 @@ async function capRetryAtStep(enrollmentId: string): Promise<Date> {
   const timeZone = plan.lead.contact.timezone ?? settings.timezone;
   const counterDayStart = nextCounterDayStart(new Date(), settings.timezone);
   return nextWindowStart(counterDayStart, timeZone, settings.sendingWindows.email);
+}
+
+/**
+ * Review item B3: a kill switch, incomplete config, missing DRY_RUN redirect or a paused
+ * mailbox parks the run at the next moment the channel may legally send — the next window
+ * start — instead of waking every hour to ask the same question. The park is recorded so
+ * the dashboard can explain why a run is not sending, and `wakeParkedRuns()` interrupts
+ * it as soon as the owner fixes the condition.
+ */
+async function parkUntilNextWindowStep(enrollmentId: string, index: number): Promise<void> {
+  "use step";
+
+  const enrollment = await getEnrollment(enrollmentId);
+  if (!enrollment) return;
+
+  const step = getStep(getSequence(enrollment.sequenceKey), index);
+  const settings = await getSettings();
+  const plan = await loadSequencePlan(enrollmentId);
+  const timeZone = plan.lead.contact.timezone ?? settings.timezone;
+  const window = step?.channel === "linkedin" ? settings.sendingWindows.linkedin : settings.sendingWindows.email;
+  const at = nextWindowStart(new Date(), timeZone, window);
+
+  await updateNextAction(enrollmentId, at);
+  await recordActivity({
+    actor: "system",
+    entityType: "enrollment",
+    entityId: enrollmentId,
+    type: "guard.blocked",
+    data: { step: index, reason: "parked", nextActionAt: at.toISOString() },
+  });
 }
 
 /** Review item 5: quota pauses the stage; the same step retries after the counter resets. */

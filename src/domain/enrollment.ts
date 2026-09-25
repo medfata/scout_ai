@@ -104,6 +104,10 @@ export function applyLeadEvent(status: EnrollmentStatus, event: LeadEvent): Even
       return { action: "stop", reason: event.kind === "hard" ? "hard_bounce" : "soft_bounce" };
     case "optout":
       return { action: "stop", reason: "opt_out" };
+    case "resume":
+      // Review item B3: the workflow re-computes the step's slot after this event, so a
+      // cleared block inside the sending window sends at once instead of at the park time.
+      return { action: "continue", reason: "resumed" };
   }
 }
 

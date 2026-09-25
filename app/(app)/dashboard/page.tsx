@@ -1,12 +1,13 @@
 import Link from "next/link";
 
+import { MeteringTable } from "@/components/dashboard/metering-table";
 import { QuotaTable } from "@/components/dashboard/quota-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { AutonomyLevel } from "@/src/domain/types";
 import { requireOwner } from "@/src/lib/session";
 import { listEnrollmentsForApproval } from "@/src/services/enrollment";
-import { quotaSnapshot } from "@/src/services/quota";
+import { databaseSizeUsage, quotaSnapshot, workflowEventUsage } from "@/src/services/quota";
 import { getSettings } from "@/src/services/settings";
 
 /**
@@ -26,10 +27,12 @@ const AUTONOMY_QUEUE_NOTES: Record<AutonomyLevel, string> = {
 
 export default async function DashboardPage() {
   await requireOwner();
-  const [snapshots, pending, settings] = await Promise.all([
+  const [snapshots, pending, settings, workflowEvents, database] = await Promise.all([
     quotaSnapshot(),
     listEnrollmentsForApproval(),
     getSettings(),
+    workflowEventUsage(),
+    databaseSizeUsage(),
   ]);
 
   // `listEnrollmentsForApproval` caps at 100 rows; show that it is a floor, not an exact count.
@@ -49,7 +52,10 @@ export default async function DashboardPage() {
       </header>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]">
-        <QuotaTable snapshots={snapshots} />
+        <div className="flex flex-col gap-6">
+          <QuotaTable snapshots={snapshots} />
+          <MeteringTable workflowEvents={workflowEvents} database={database} />
+        </div>
 
         <div className="flex flex-col gap-6">
           <Card>

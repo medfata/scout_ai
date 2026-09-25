@@ -62,7 +62,17 @@ export const MONTHLY_ALLOWANCES = {
 /** Section 0: "alert at 80%" for workflow events and database storage. */
 export const QUOTA_ALERT_THRESHOLD = 0.8;
 
-export type QuotaResource = "exa_searches" | "email_verifications" | "ai_spend_usd" | "new_prospects" | "emails_sent" | "linkedin_invites";
+export type QuotaResource =
+  | "exa_searches"
+  | "email_verifications"
+  | "ai_spend_usd"
+  | "new_prospects"
+  | "emails_sent"
+  | "linkedin_invites"
+  /** Section 0: 50,000 Workflow events a month, "alert at 80%" (review item B4). */
+  | "workflow_events"
+  /** Section 0: 0.5 GB Neon database, "alert at 80%" (review item B4). */
+  | "database_storage";
 
 export interface QuotaUsage {
   resource: QuotaResource;
@@ -106,6 +116,14 @@ export function stageForResource(resource: QuotaResource): Stage {
       return "sending";
     case "linkedin_invites":
       return "linkedin_tasks";
+    case "workflow_events":
+      // The durable sequencer is the main consumer of workflow events, so sending is the
+      // stage that stalls when the monthly allowance is gone.
+      return "sending";
+    case "database_storage":
+      // Storage fills up with sourced raw payloads, which section 0 prunes when the
+      // warning threshold is crossed.
+      return "sourcing";
   }
 }
 
@@ -123,5 +141,9 @@ export function humanQuotaName(resource: QuotaResource): string {
       return "emails sent today";
     case "linkedin_invites":
       return "LinkedIn invites";
+    case "workflow_events":
+      return "workflow events";
+    case "database_storage":
+      return "database storage";
   }
 }

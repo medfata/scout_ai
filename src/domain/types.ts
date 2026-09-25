@@ -230,7 +230,13 @@ export type LeadEvent =
   | { type: "accepted"; at: string }
   | { type: "ooo"; returnDate?: string }
   | { type: "bounce"; kind: "hard" | "soft" }
-  | { type: "optout" };
+  | { type: "optout" }
+  /**
+   * Review item B3: a parked run (kill switch, incomplete config, dry run without a
+   * redirect, paused mailbox) wakes when the blocking condition is fixed. Settings and
+   * mailbox paths call `wakeParkedRuns()`, which resumes this hook with `resume`.
+   */
+  | { type: "resume" };
 
 export type LeadEventType = LeadEvent["type"];
 
