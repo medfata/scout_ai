@@ -1,8 +1,11 @@
 import type { ChannelKind } from "@/src/domain/types";
 import type { Channel } from "@/src/ports/channel";
 import { logger } from "@/src/lib/logger";
-import { createGmailChannel } from "./gmail";
+import { createGmailChannel, type ReconcilableChannel } from "./gmail";
 import { createManualLinkedinChannel } from "./manual-linkedin";
+
+export type { ReconciledSend, ReconcilableChannel } from "./gmail";
+export { senderDomainFrom } from "./gmail";
 
 /**
  * The channel registry. `sendMessage` resolves a channel through here and never imports a
@@ -39,6 +42,18 @@ export function getChannel(kind: ChannelKind): Channel | null {
     logger.warn("channel.unavailable", { kind, reason: error instanceof Error ? error.message : "unknown" });
     return null;
   }
+}
+
+/**
+ * Review item 8: only channels that can look a send up by RFC 5322 Message-ID may take
+ * part in reconciliation. The guard uses this narrowing instead of guessing, so a
+ * message stuck in `sending` on a channel that cannot be searched is never blind-retried.
+ */
+export function getReconcilableChannel(kind: ChannelKind): ReconcilableChannel | null {
+  const channel = getChannel(kind);
+  if (!channel) return null;
+  const candidate = channel as Partial<ReconcilableChannel>;
+  return typeof candidate.findSentByRfcMessageId === "function" ? (channel as ReconcilableChannel) : null;
 }
 
 /** Test seam: forgets constructed channels so a test can swap in a fake. */

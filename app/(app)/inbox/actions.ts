@@ -7,9 +7,16 @@ import { isLive } from "@/src/domain/enrollment";
 import type { EnrollmentStatus } from "@/src/domain/types";
 import { logger } from "@/src/lib/logger";
 import { requireOwner } from "@/src/lib/session";
-import { approveEnrollment, skipEnrollment, stopEnrollment } from "@/src/services/enrollment";
+import {
+  activateEnrollment,
+  approveEnrollment,
+  getEnrollment,
+  skipEnrollment,
+  stopEnrollment,
+} from "@/src/services/enrollment";
+import { resumeApproval } from "@/src/services/hooks";
 import { addSuppression } from "@/src/services/leads";
-import { approveMessage, skipMessage, updateDraft } from "@/src/services/messages";
+import { approveMessage, getMessage, skipMessage, updateDraft } from "@/src/services/messages";
 import type { InboxActionResult } from "@/components/inbox/types";
 
 /**
@@ -17,13 +24,19 @@ import type { InboxActionResult } from "@/components/inbox/types";
  * `src/lib/session.ts`, so a request without the owner's session is redirected before any
  * database write.
  *
- * Section 10 rule 6: nothing here sends. Approval only marks a message `approved`; the
- * send path is `src/services/sending.ts`, and its guard runs at send time.
+ * Section 10 rule 6: nothing here sends. Approval only marks a message `approved` and
+ * wakes the enrollment's durable run (review item 1); the send path is
+ * `src/services/sending.ts`, and its guard runs at send time.
+ *
+ * The `enrollmentStatus` field is still in the client's payload, but every action reads
+ * the status from the database instead (review item 3): a stale tab must never be able to
+ * activate or skip an enrollment that has already moved on.
  */
 
 export async function approveDraftMessage(input: {
   messageId: string;
   enrollmentId: string;
+  /** Retained for the client's payload shape; the database row is the authority. */
   enrollmentStatus: EnrollmentStatus;
   subject: string;
   body: string;
@@ -31,18 +44,41 @@ export async function approveDraftMessage(input: {
   await requireOwner();
 
   try {
-    await updateDraft(input.messageId, {
+    const message = await getMessage(input.messageId);
+    const enrollment = await getEnrollment(input.enrollmentId);
+    if (!message || !enrollment || message.enrollmentId !== enrollment.id) {
+      return { ok: false, error: "That draft does not belong to this enrollment." };
+    }
+
+    // Review item 3: `updateDraft` may only touch a message that is still waiting. A
+    // message that was approved, sent or skipped meanwhile must not be edited.
+    if (message.status !== "drafted" && message.status !== "pending_approval") {
+      return { ok: false, error: `The message is "${message.status}"; only a waiting draft can be approved.` };
+    }
+
+    if (input.body.trim().length === 0) {
+      // A failed LLM validation persists an empty `needs_owner` row (review item 5).
+      // Approving it unchanged would send an empty email.
+      return { ok: false, error: "The draft is empty. Write the message before approving." };
+    }
+
+    await updateDraft(message.id, {
       subject: input.subject.trim().length > 0 ? input.subject.trim() : null,
       body: input.body,
     });
-    await approveMessage(input.messageId, "owner");
+    await approveMessage(message.id, "owner");
 
-    // A first touch waiting for approval also activates its enrollment (section 5:
-    // "pending_approval --> active: approved"). An already-active enrollment (follow-up)
-    // is left to the sequencer.
-    if (input.enrollmentStatus === "pending_approval") {
-      await approveEnrollment(input.enrollmentId);
+    // Section 5: "pending_approval --> active: approved". Starting the durable run is
+    // what makes the approved first touch actually send (review item 1); the atomic claim
+    // inside `activateEnrollment` makes this safe to call twice.
+    if (enrollment.status === "pending_approval") {
+      await approveEnrollment(enrollment.id);
+      await activateEnrollment(enrollment.id);
     }
+
+    // Review item 3: wake a run that is already sleeping on this step's approval hook.
+    // If the hook was not registered yet, the run's post-hook re-read finds the approval.
+    await resumeApproval(enrollment.id, message.step, true);
 
     revalidatePath("/inbox");
     revalidatePath("/leads");
@@ -56,17 +92,31 @@ export async function approveDraftMessage(input: {
 export async function skipDraftMessage(input: {
   messageId: string;
   enrollmentId: string;
+  /** Retained for the client's payload shape; the database row is the authority. */
   enrollmentStatus: EnrollmentStatus;
 }): Promise<InboxActionResult> {
   await requireOwner();
 
   try {
-    await skipMessage(input.messageId, "owner_skipped");
+    const message = await getMessage(input.messageId);
+    const enrollment = await getEnrollment(input.enrollmentId);
+    if (!message || !enrollment || message.enrollmentId !== enrollment.id) {
+      return { ok: false, error: "That draft does not belong to this enrollment." };
+    }
+    if (message.status !== "drafted" && message.status !== "pending_approval") {
+      return { ok: false, error: `The message is "${message.status}"; only a waiting draft can be skipped.` };
+    }
+
+    await skipMessage(message.id, "owner_skipped");
+
+    // Tell a sleeping run that this step is over now instead of leaving it in the
+    // three-day approval window.
+    await resumeApproval(enrollment.id, message.step, false);
 
     // Section 5's diagram: skipping the first touch skips the enrollment too, so the lead
     // does not sit in the queue forever with no pending message.
-    if (input.enrollmentStatus === "pending_approval" || input.enrollmentStatus === "drafted") {
-      await skipEnrollment(input.enrollmentId, "owner_skipped_message");
+    if (enrollment.status === "pending_approval" || enrollment.status === "drafted") {
+      await skipEnrollment(enrollment.id, "owner_skipped_message");
     }
 
     revalidatePath("/inbox");
@@ -81,6 +131,7 @@ export async function skipDraftMessage(input: {
 export async function neverContactLead(input: {
   messageId: string;
   enrollmentId: string;
+  /** Retained for the client's payload shape; the database row is the authority. */
   enrollmentStatus: EnrollmentStatus;
   email: string | null;
   companyDomain: string | null;
@@ -105,10 +156,18 @@ export async function neverContactLead(input: {
       await addSuppression({ kind: "linkedin", value: input.linkedinUrl, reason: "owner_never_contact" });
     }
 
-    if (isLive(input.enrollmentStatus)) {
-      await stopEnrollment(input.enrollmentId, "never_contact");
+    const [message, enrollment] = await Promise.all([getMessage(input.messageId), getEnrollment(input.enrollmentId)]);
+    if (message && enrollment && message.enrollmentId !== enrollment.id) {
+      return { ok: false, error: "That draft does not belong to this enrollment." };
     }
-    await skipMessage(input.messageId, "never_contact");
+    if (enrollment && isLive(enrollment.status)) {
+      await stopEnrollment(enrollment.id, "never_contact");
+    }
+    if (message) {
+      await skipMessage(message.id, "never_contact");
+      // Release a sleeping approval hook so the run notices immediately.
+      await resumeApproval(message.enrollmentId ?? input.enrollmentId, message.step, false);
+    }
 
     revalidatePath("/inbox");
     revalidatePath("/leads");

@@ -10,6 +10,12 @@ import { z } from "zod";
  *  - **vendor** vars are optional at boot and asserted by the adapter that needs
  *    them (`src/ports` delivers a typed error, never a crash on startup), so a
  *    missing Apollo key cannot take down the approval inbox.
+ *
+ * Two invariants are enforced here because getting them wrong is dangerous, not just
+ * inconvenient (review items 9 and 21):
+ *  - `DRY_RUN=true` always has `DRY_RUN_REDIRECT_EMAIL`, so a test send has a destination.
+ *  - `DRY_RUN=true` outside `VERCEL_ENV=production`, so local and preview can never send
+ *    real cold email (section 8: "Preview deployments run with DRY_RUN=true").
  */
 
 if (typeof window !== "undefined") {
@@ -29,41 +35,74 @@ const boolFromEnv = (defaultValue: boolean) =>
 
 const nonEmpty = z.string().min(1);
 
-const coreSchema = z.object({
-  APP_URL: z.string().url(),
-  ADMIN_EMAIL: z.string().email(),
-  BETTER_AUTH_SECRET: z.string().min(32, "BETTER_AUTH_SECRET must be at least 32 characters"),
-  ENCRYPTION_KEY: z
-    .string()
-    .refine((value) => {
-      try {
-        return Buffer.from(value, "base64").length === 32;
-      } catch {
-        return false;
-      }
-    }, "ENCRYPTION_KEY must be 32 random bytes, base64 encoded"),
-  DATABASE_URL: z.string().refine((value) => value.startsWith("postgres://") || value.startsWith("postgresql://"), {
-    message: "DATABASE_URL must be a postgres:// or postgresql:// connection string",
-  }),
-  OWNER_TIMEZONE: nonEmpty,
-  DRY_RUN: boolFromEnv(true),
-  DRY_RUN_REDIRECT_EMAIL: z.union([z.string().email(), z.literal("")]).optional(),
-  CRON_SECRET: z.union([z.string().min(16), z.literal("")]).optional(),
-  SENDER_EMAIL: z.union([z.string().email(), z.literal("")]).optional(),
-  // Quotas (section 0)
-  DAILY_NEW_PROSPECTS: z.coerce.number().int().positive().default(5),
-  MAX_DAILY_NEW_PROSPECTS: z.coerce.number().int().positive().default(12),
-  DAILY_EMAIL_CAP: z.coerce.number().int().positive().default(50),
-  DAILY_LINKEDIN_TASKS: z.coerce.number().int().positive().default(10),
-  DAILY_EXA_SEARCHES: z.coerce.number().int().positive().default(45),
-  DAILY_VERIFICATIONS: z.coerce.number().int().positive().default(23),
-  MONTHLY_AI_BUDGET_USD: z.coerce.number().positive().default(5),
-  DAILY_AI_BUDGET_USD: z.coerce.number().positive().optional(),
-  LINKEDIN_MODE: z.enum(["assisted", "automated"]).default("assisted"),
-  // AI
-  MODEL_COPY: nonEmpty.default("anthropic/claude-haiku-4.5"),
-  MODEL_RESEARCH: nonEmpty.default("gemini-3.8-flash"),
-});
+const coreSchema = z
+  .object({
+    APP_URL: z.string().url(),
+    ADMIN_EMAIL: z.string().email(),
+    BETTER_AUTH_SECRET: z.string().min(32, "BETTER_AUTH_SECRET must be at least 32 characters"),
+    ENCRYPTION_KEY: z
+      .string()
+      .refine((value) => {
+        try {
+          return Buffer.from(value, "base64").length === 32;
+        } catch {
+          return false;
+        }
+      }, "ENCRYPTION_KEY must be 32 random bytes, base64 encoded"),
+    DATABASE_URL: z.string().refine((value) => value.startsWith("postgres://") || value.startsWith("postgresql://"), {
+      message: "DATABASE_URL must be a postgres:// or postgresql:// connection string",
+    }),
+    OWNER_TIMEZONE: nonEmpty,
+    DRY_RUN: boolFromEnv(true),
+    /** Required only while DRY_RUN is on; every test send is rewritten to this mailbox. */
+    DRY_RUN_REDIRECT_EMAIL: z.union([z.string().email(), z.literal("")]).optional(),
+    /** Vercel sets "production" | "preview" | "development"; absent locally. Review item 21. */
+    VERCEL_ENV: z.string().optional(),
+    CRON_SECRET: z.union([z.string().min(16), z.literal("")]).optional(),
+    SENDER_EMAIL: z.union([z.string().email(), z.literal("")]).optional(),
+    // Quotas (section 0)
+    DAILY_NEW_PROSPECTS: z.coerce.number().int().positive().default(5),
+    MAX_DAILY_NEW_PROSPECTS: z.coerce.number().int().positive().default(12),
+    DAILY_EMAIL_CAP: z.coerce.number().int().positive().default(50),
+    DAILY_LINKEDIN_TASKS: z.coerce.number().int().positive().default(10),
+    DAILY_EXA_SEARCHES: z.coerce.number().int().positive().default(45),
+    DAILY_VERIFICATIONS: z.coerce.number().int().positive().default(23),
+    MONTHLY_AI_BUDGET_USD: z.coerce.number().positive().default(5),
+    DAILY_AI_BUDGET_USD: z.coerce.number().positive().optional(),
+    LINKEDIN_MODE: z.enum(["assisted", "automated"]).default("assisted"),
+    // AI
+    // Section 4: "IDs live in env, never hard-coded". No default: a missing id is a boot
+    // error with a readable message instead of silently pinning a model that may not exist.
+    MODEL_COPY: z
+      .string({
+        error:
+          "MODEL_COPY is required. Pick an id from the AI Gateway model list (see scripts/refresh-models.ts) and set it in .env.local.",
+      })
+      .min(1, "MODEL_COPY must not be empty."),
+    MODEL_RESEARCH: z
+      .string({
+        error:
+          "MODEL_RESEARCH is required. Pick a Gemini free-tier model id (see .env.example) and set it in .env.local.",
+      })
+      .min(1, "MODEL_RESEARCH must not be empty."),
+  })
+  .superRefine((value, ctx) => {
+    if (value.VERCEL_ENV !== "production" && !value.DRY_RUN) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["DRY_RUN"],
+        message:
+          'DRY_RUN must be "true" unless VERCEL_ENV is "production" (section 8). An unset VERCEL_ENV counts as non-production, so local and preview can never send real email.',
+      });
+    }
+    if (value.DRY_RUN && !value.DRY_RUN_REDIRECT_EMAIL) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["DRY_RUN_REDIRECT_EMAIL"],
+        message: "DRY_RUN=true requires DRY_RUN_REDIRECT_EMAIL so every test send has a safe destination (review item 21).",
+      });
+    }
+  });
 
 const vendorSchema = z.object({
   GOOGLE_CLIENT_ID: z.union([nonEmpty, z.literal("")]).optional(),

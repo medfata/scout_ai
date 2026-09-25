@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, or } from "drizzle-orm";
 
 import { generateStructured } from "@/src/ai/client";
 import { classifyReply } from "@/src/ai/agents/reply-classifier";
@@ -11,7 +11,7 @@ import type { ReplyIntent, SuppressionKind } from "@/src/domain/types";
 import { getEnv } from "@/src/lib/env";
 import { logger } from "@/src/lib/logger";
 import { recordActivity } from "./activity";
-import { addSuppression, suppressContact } from "./leads";
+import { suppressContact } from "./leads";
 import { setMessageIntent } from "./messages";
 import { notifyOwner } from "./notifications";
 import { recordAiCall } from "./quota";
@@ -36,6 +36,38 @@ export interface HandleReplyResult {
   suppressed: boolean;
   alerted: boolean;
   suggestedReply: string | null;
+}
+
+/** How long a claim is honoured before a later run may pick the message up again. */
+const REPLY_CLAIM_STALE_MS = 15 * 60 * 1000;
+
+/**
+ * Review item 16: a workflow step may retry, so `start(replyWorkflow, …)` can run twice for
+ * the same message (double model call, double alert). `reply_handled_at` is an atomic claim:
+ * the conditional UPDATE only matches while the column is null or stale, so exactly one run
+ * wins.
+ *
+ * The stale window lets a run that died mid-classification be retried instead of blocking
+ * the message forever. `intent IS NULL` keeps an already-classified message — from an
+ * earlier run or from the replies page's "reclassify" — out of the claim, so nothing alerts
+ * twice.
+ */
+export async function claimReplyHandling(messageId: string): Promise<boolean> {
+  const db = getDb();
+  const staleBefore = new Date(Date.now() - REPLY_CLAIM_STALE_MS);
+  const [claimed] = await db
+    .update(messages)
+    .set({ replyHandledAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(messages.id, messageId),
+        eq(messages.direction, "inbound"),
+        isNull(messages.intent),
+        or(isNull(messages.replyHandledAt), lt(messages.replyHandledAt, staleBefore)),
+      ),
+    )
+    .returning({ id: messages.id });
+  return Boolean(claimed);
 }
 
 export async function handleInboundReply(input: { messageId: string }): Promise<HandleReplyResult> {
@@ -99,14 +131,9 @@ export async function handleInboundReply(input: { messageId: string }): Promise<
     if (routing.suppressKinds.includes("linkedin") && row.contact.linkedinUrl) kinds.push("linkedin");
     await suppressContact(row.contact, intent, kinds);
 
-    // A hard bounce is a property of the domain as much as the address: keep sending to
-    // the same company from the same mailbox and the reputation damage compounds.
-    if (intent === "bounce" && row.contact.email) {
-      const at = row.contact.email.lastIndexOf("@");
-      if (at > 0) {
-        await addSuppression({ kind: "domain", value: row.contact.email.slice(at + 1), reason: "hard bounce" });
-      }
-    }
+    // Review item 20: a hard bounce suppresses the email address only. The company-domain
+    // suppression this block used to write was invented — it blocked every colleague of a
+    // person whose mailbox had moved, and `addSuppression` now refuses such writes outright.
     suppressed = kinds.length > 0;
   }
 

@@ -76,7 +76,7 @@ async function main(): Promise<void> {
   const learnings = offer ? await loadLearningsForIcpGeneration() : [];
 
   console.log(`verify-icp: prompt ${ICP_PROMPT_VERSION}, offer "${promptOffer.title}"`);
-  console.log(`verify-icp: model ${process.env.MODEL_COPY ?? "(MODEL_COPY env default)"}\n`);
+  console.log(`verify-icp: model ${process.env.MODEL_COPY ?? "(MODEL_COPY is not set; see .env.example)"}\n`);
 
   const generated = await generateIcps({ offer: promptOffer, learnings });
   console.log(`generated ${generated.icps.length} ICPs`);

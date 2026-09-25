@@ -3,7 +3,7 @@ import { enrollments, messages } from "@/src/db/schema";
 import { and, eq, inArray } from "drizzle-orm";
 
 import type { LeadEvent, ReplyIntent } from "@/src/domain/types";
-import { handleInboundReply } from "@/src/services/reply-handling";
+import { claimReplyHandling, handleInboundReply } from "@/src/services/reply-handling";
 import { leadEventHook } from "./sequence";
 
 /**
@@ -12,7 +12,8 @@ import { leadEventHook } from "./sequence";
  *
  * The workflow itself only orchestrates: classification, suppression, alerts and the
  * suggested reply all happen in `handleInboundReply`, which is idempotent because every
- * decision it makes is keyed on stored state.
+ * decision it makes is keyed on stored state. `reply_handled_at` is the claim that makes
+ * the *runs themselves* idempotent (review item 16).
  *
  * `resumeHook` must be called from outside a workflow function, so the resume happens in
  * a step — a step is a normal function at runtime, which is exactly the boundary the SDK
@@ -22,10 +23,16 @@ import { leadEventHook } from "./sequence";
 export type ReplyWorkflowResult =
   | { status: "handled"; intent: string; resumed: boolean }
   | { status: "needs_owner"; reason: string }
-  | { status: "no_enrollment" };
+  | { status: "no_enrollment" }
+  | { status: "already_handled" };
 
 export async function replyWorkflow(messageId: string): Promise<ReplyWorkflowResult> {
   "use workflow";
+
+  // Review item 16: the step that starts reply runs can retry, so two runs may exist for
+  // the same message. The claim is atomic and the loser is a no-op.
+  const claimed = await claimStep(messageId);
+  if (!claimed) return { status: "already_handled" };
 
   const handled = await classifyStep(messageId);
   if (!handled.ok) {
@@ -35,6 +42,11 @@ export async function replyWorkflow(messageId: string): Promise<ReplyWorkflowRes
 
   const resumed = await resumeSequenceStep(messageId);
   return { status: "handled", intent: handled.intent ?? "other", resumed };
+}
+
+async function claimStep(messageId: string): Promise<boolean> {
+  "use step";
+  return claimReplyHandling(messageId);
 }
 
 interface ClassifyStepResult {

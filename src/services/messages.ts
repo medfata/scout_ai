@@ -140,12 +140,21 @@ export async function skipMessage(messageId: string, reason: string): Promise<Me
  *
  * Returns false when another worker already claimed the message, so the provider is
  * called exactly once even if the step is retried.
+ *
+ * Review item 8: `rfcMessageId` is written *before* the provider call (same UPDATE, so
+ * there is no window where a claimed message has no Message-ID to reconcile with). A
+ * message that stays `sending` after a crash or an ambiguous provider error is looked up
+ * by this id on the next attempt.
  */
-export async function claimMessageForSend(messageId: string): Promise<Message | null> {
+export async function claimMessageForSend(messageId: string, rfcMessageId?: string): Promise<Message | null> {
   const db = getDb();
   const [claimed] = await db
     .update(messages)
-    .set({ status: "sending", updatedAt: new Date() })
+    .set({
+      status: "sending",
+      ...(rfcMessageId ? { rfcMessageId } : {}),
+      updatedAt: new Date(),
+    })
     .where(and(eq(messages.id, messageId), eq(messages.status, "approved")))
     .returning();
   return claimed ?? null;
@@ -436,6 +445,26 @@ export async function getThreadAnchor(enrollmentId: string): Promise<{ threadId:
     .orderBy(desc(messages.sentAt))
     .limit(1);
   return { threadId: row?.threadId ?? null, rfcMessageId: row?.rfcMessageId ?? null };
+}
+
+/**
+ * Review item 10: every Message-ID already sent on this enrollment, oldest first, so the
+ * send guard can set `References` to the whole chain and `In-Reply-To` to its last entry.
+ */
+export async function listSentRfcMessageIds(enrollmentId: string): Promise<string[]> {
+  const db = getDb();
+  const rows = await db
+    .select({ rfcMessageId: messages.rfcMessageId })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.enrollmentId, enrollmentId),
+        eq(messages.status, "sent"),
+        sql`${messages.rfcMessageId} is not null`,
+      ),
+    )
+    .orderBy(asc(messages.sentAt), asc(messages.createdAt));
+  return rows.map((row) => row.rfcMessageId).filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
 /** Section 7: "Not now" creates a new, approval-gated enrollment. */

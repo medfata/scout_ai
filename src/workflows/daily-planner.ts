@@ -29,6 +29,8 @@ export interface DailyPlanResult {
   budget: number;
   icps: Array<{ icpId: string; name: string; allocated: number; created: number; deduped: number; suppressed: number }>;
   researchRuns: string[];
+  /** Review item 1: active/waiting enrollments whose durable run had to be restarted. */
+  reconcile: ReconcileSummary;
   errors: string[];
 }
 
@@ -36,15 +38,22 @@ export async function dailyPlannerWorkflow(): Promise<DailyPlanResult> {
   "use workflow";
 
   const plan = await planDayStep();
+  const reconcile = await reconcileStep();
   const sourced = await sourceStep(plan.allocations);
   const researchRuns = await researchStep(sourced.created);
-  await digestStep({ plan: { ...plan, allocations: sourced.allocations }, researchRuns });
+  await digestStep({
+    plan: { ...plan, allocations: sourced.allocations },
+    researchRuns,
+    reconcile,
+    planErrors: plan.errors,
+  });
   return {
     date: plan.date,
     budget: plan.budget,
     icps: sourced.allocations,
     researchRuns,
-    errors: [...plan.errors, ...sourced.errors],
+    reconcile,
+    errors: [...plan.errors, ...reconcile.errors, ...sourced.errors],
   };
 }
 
@@ -64,6 +73,15 @@ interface DayPlan {
   errors: string[];
 }
 
+export interface ReconcileSummary {
+  checked: number;
+  restarted: number;
+  errors: string[];
+}
+
+/** Gmail watch runs live when `pending` or `running`; everything else needs a new run. */
+const LIVE_RUN_STATUSES = new Set(["pending", "running"]);
+
 async function planDayStep(): Promise<DayPlan> {
   "use step";
 
@@ -82,6 +100,22 @@ async function planDayStep(): Promise<DayPlan> {
     type: "cron.daily_started",
     data: { budget, alreadyCreated },
   });
+
+  // Section 4: "Replies arrive via Gmail push notifications." The watch expires after
+  // seven days, so the daily heartbeat renews it. Dynamic import so the planner does not
+  // depend on the mailbox module at load time.
+  try {
+    const { renewGmailWatch } = await import("@/src/services/gmail-watch");
+    const watch = await renewGmailWatch();
+    if (!watch.renewed && watch.reason !== "no_pubsub_topic") {
+      // No topic yet is a normal free-first state (the owner creates it by hand);
+      // anything else means replies will not arrive.
+      errors.push(`Gmail watch not renewed: ${watch.reason ?? "unknown"}.`);
+    }
+  } catch (error) {
+    logger.warn("planner.gmail_watch_failed", { reason: error instanceof Error ? error.message : "unknown" });
+    errors.push("Gmail watch renewal failed.");
+  }
 
   const db = getDb();
   const approved = await db
@@ -109,6 +143,55 @@ async function planDayStep(): Promise<DayPlan> {
   });
 
   return { date, budget, allocations, errors };
+}
+
+/**
+ * Review item 1: "active/waiting enrollments with no live run are restarted". A run can be
+ * missing because a deploy replaced it, because `start()` failed after the claim, or
+ * because it ended without moving the enrollment. `getRun` is the authority on liveness,
+ * and a `starting:` claim younger than the stale window belongs to an in-flight start.
+ */
+async function reconcileStep(): Promise<ReconcileSummary> {
+  "use step";
+
+  const { activateEnrollment, clearWorkflowRunId, listEnrollmentsForReconcile, START_CLAIM_STALE_MS } = await import(
+    "@/src/services/enrollment"
+  );
+  const { getRun } = await import("workflow/api");
+
+  const rows = await listEnrollmentsForReconcile();
+  const summary: ReconcileSummary = { checked: rows.length, restarted: 0, errors: [] };
+
+  for (const enrollment of rows) {
+    try {
+      const runId = enrollment.workflowRunId;
+
+      if (runId && runId.startsWith("starting:")) {
+        // Another caller is mid-`start()`. Only a claim older than the window is dead.
+        if (Date.now() - enrollment.updatedAt.getTime() < START_CLAIM_STALE_MS) continue;
+      } else if (runId) {
+        const run = getRun(runId);
+        const exists = await run.exists;
+        const status = exists ? await run.status : null;
+        if (status && LIVE_RUN_STATUSES.has(status)) continue;
+      }
+
+      // No run id, a stale claim, or a run that already ended: give the enrollment a run.
+      await clearWorkflowRunId(enrollment.id, runId);
+      const activation = await activateEnrollment(enrollment.id);
+      if (activation.started) {
+        summary.restarted += 1;
+      } else if (activation.reason === "start_failed" || activation.reason === "not_found") {
+        summary.errors.push(`Enrollment ${enrollment.id}: ${activation.reason}.`);
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "unknown";
+      logger.warn("planner.reconcile_failed", { enrollmentId: enrollment.id, reason });
+      summary.errors.push(`Enrollment ${enrollment.id}: ${reason}`);
+    }
+  }
+
+  return summary;
 }
 
 async function sourceStep(allocations: Allocation[]): Promise<{ allocations: Allocation[]; created: Array<{ contactId: string; icpId: string }>; errors: string[] }> {
@@ -149,6 +232,8 @@ async function researchStep(created: Array<{ contactId: string; icpId: string }>
 async function digestStep(input: {
   plan: { date: string; budget: number; allocations: Allocation[] };
   researchRuns: string[];
+  reconcile: ReconcileSummary;
+  planErrors: string[];
 }): Promise<void> {
   "use step";
 
@@ -172,6 +257,19 @@ async function digestStep(input: {
       `Tier A/B/C today: ${tierCounts.A}/${tierCounts.B}/${tierCounts.C}`,
     ],
   });
+
+  sections.push({
+    heading: "Sequences",
+    lines: [
+      `Live enrollments checked: ${input.reconcile.checked}`,
+      `Runs restarted: ${input.reconcile.restarted}`,
+      ...input.reconcile.errors.map((error) => `  ${error}`),
+    ],
+  });
+
+  if (input.planErrors.length > 0) {
+    sections.push({ heading: "Issues", lines: input.planErrors });
+  }
 
   sections.push({
     heading: "Waiting for you",

@@ -23,6 +23,12 @@ const defaults: Record<string, string> = {
   DATABASE_URL: "postgres://scout:scout@127.0.0.1:1/scout_test?sslmode=disable",
   OWNER_TIMEZONE: "UTC",
   DRY_RUN: "true",
+  // Review item 21: env validation refuses DRY_RUN=true without a redirect destination.
+  DRY_RUN_REDIRECT_EMAIL: "owner@example.com",
+  // Section 4: model ids live in env, never hard-coded. Required core vars; the values
+  // are placeholders and no test may make a model call.
+  MODEL_COPY: "test/model-copy",
+  MODEL_RESEARCH: "test-model-research",
 };
 
 for (const [name, value] of Object.entries(defaults)) {

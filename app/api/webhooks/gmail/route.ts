@@ -1,6 +1,9 @@
+import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { start } from "workflow/api";
 
+import { getDb } from "@/src/db/client";
+import { webhookEvents } from "@/src/db/schema";
 import { getEnv } from "@/src/lib/env";
 import { logger } from "@/src/lib/logger";
 import { logWebhookRejection, markWebhookProcessed, storeWebhookEvent, verifySharedSecret } from "@/src/lib/webhooks";
@@ -81,19 +84,46 @@ export async function POST(request: Request): Promise<Response> {
     payload: payload as Record<string, unknown>,
   });
 
+  // Review item 15: a duplicate only counts as handled when the first attempt finished
+  // cleanly. One whose first attempt errored or was interrupted is retried — the ingest is
+  // idempotent (`messages.provider_message_id` is unique), so a retry cannot double-store
+  // mail or double-classify a reply.
   if (stored.duplicate) {
-    return NextResponse.json({ ok: true, duplicate: true });
+    const prior = await loadWebhookOutcome(stored.id);
+    if (prior?.processedAt && !prior.error) {
+      return NextResponse.json({ ok: true, duplicate: true });
+    }
+    logger.warn("webhook.gmail_duplicate_retry", {
+      reason: prior?.error ? "previous_error" : "not_processed",
+    });
   }
 
   try {
     const run = await start(gmailIngestWorkflow, [historyId]);
     await markWebhookProcessed(stored.id);
-    return NextResponse.json({ ok: true, runId: run.runId });
+    return NextResponse.json({ ok: true, runId: run.runId, duplicate: stored.duplicate });
   } catch (error) {
     const message = error instanceof Error ? error.message : "ingest_start_failed";
     logger.error("webhook.gmail_ingest_failed", { reason: message });
-    // The event stays in `webhook_events` with its error, so nothing is silently lost.
+    // The event stays in `webhook_events` with its error, so a redelivery retries it.
     await markWebhookProcessed(stored.id, message);
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
+}
+
+interface WebhookOutcome {
+  processedAt: Date | null;
+  error: string | null;
+}
+
+/** The stored event's outcome; `null` means it could not be read, which is retried. */
+async function loadWebhookOutcome(id: string): Promise<WebhookOutcome | null> {
+  if (id === "unknown") return null;
+  const db = getDb();
+  const [row] = await db
+    .select({ processedAt: webhookEvents.processedAt, error: webhookEvents.error })
+    .from(webhookEvents)
+    .where(eq(webhookEvents.id, id))
+    .limit(1);
+  return row ?? null;
 }

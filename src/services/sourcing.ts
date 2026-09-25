@@ -5,13 +5,13 @@ import { getDb } from "@/src/db/client";
 import { companies, icps, offers, type Icp, type Offer } from "@/src/db/schema";
 import { dailyNewProspectQuota } from "@/src/domain/quotas";
 import { preScore } from "@/src/domain/scoring";
-import { isSuppressed, normalizeDomain } from "@/src/domain/suppression";
+import { normalizeDomain } from "@/src/domain/suppression";
 import { getEnv } from "@/src/lib/env";
 import { ConfigurationError, isScoutError, ScoutError } from "@/src/lib/errors";
 import { logger } from "@/src/lib/logger";
 import type { IcpSearchInput, LeadCandidate, LeadSource, SignalCandidate, SignalSource } from "@/src/ports/lead-source";
 import { recordActivity } from "./activity";
-import { loadSuppressionEntries, upsertCompany, upsertContact } from "./leads";
+import { isContactSuppressed, upsertCompany, upsertContact } from "./leads";
 import { assertNewProspectQuota, dailyNewProspectCount } from "./quota";
 import { getSettings } from "./settings";
 
@@ -114,7 +114,8 @@ async function runSourcing(row: { icp: Icp; offer: Offer }, sources: LeadSource[
     searchFilters: icp.searchFilters,
   };
 
-  const [suppressionEntries, existingDomains] = await Promise.all([loadSuppressionEntries(), loadExistingCompanyDomains()]);
+  // Review item 19: suppression is an indexed lookup per candidate, not a full table load.
+  const existingDomains = await loadExistingCompanyDomains();
 
   const settled = await Promise.allSettled(
     sources.map((source) => source.search({ icp: searchInput, limit, excludeDomains: existingDomains })),
@@ -191,10 +192,11 @@ async function runSourcing(row: { icp: Icp; offer: Offer }, sources: LeadSource[
     }
 
     if (
-      isSuppressed(
-        { email: candidate.email, companyDomain: candidate.companyDomain, linkedinUrl: candidate.linkedinUrl },
-        suppressionEntries,
-      )
+      await isContactSuppressed({
+        email: candidate.email,
+        companyDomain: candidate.companyDomain,
+        linkedinUrl: candidate.linkedinUrl,
+      })
     ) {
       suppressed += 1;
       await recordActivity({

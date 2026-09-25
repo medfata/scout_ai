@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/src/db/client";
 import { connectedAccounts, type ConnectedAccount, type NewConnectedAccount } from "@/src/db/schema";
@@ -143,6 +143,43 @@ export async function getEmailAccountForSend(): Promise<ConnectedAccount> {
     throw new Error("No email account is connected. Connect the sending mailbox in Settings before sending.");
   }
   return account;
+}
+
+export interface SendSlotReservation {
+  /** The instant reserved for this caller; the send may leave at or after it. */
+  slotAt: Date;
+  /** The mailbox's next open instant after this reservation. */
+  nextSlotAt: Date;
+}
+
+/**
+ * Review item 11: section 7's "3–9 min random spacing" is per *mailbox*, not per
+ * enrollment. Thirty enrollments wake on the same sending window, so the spacing has to
+ * be serialised somewhere shared: one atomic UPDATE on `connected_accounts.next_send_at`.
+ *
+ * `GREATEST(coalesce(next_send_at, now), now) + spacing` gives each caller a distinct
+ * slot even when they race, and the row lock means no two callers can claim the same one.
+ */
+export async function reserveSendSlot(accountId: string, spacingMs: number, now: Date): Promise<SendSlotReservation> {
+  const db = getDb();
+  const [row] = await db
+    .update(connectedAccounts)
+    .set({
+      nextSendAt: sql`greatest(coalesce(${connectedAccounts.nextSendAt}, ${now}), ${now}) + (${spacingMs}::double precision * interval '1 millisecond')`,
+      updatedAt: new Date(),
+    })
+    .where(eq(connectedAccounts.id, accountId))
+    .returning({ nextSendAt: connectedAccounts.nextSendAt });
+
+  if (!row?.nextSendAt) {
+    throw new Error(`Connected account ${accountId} not found while reserving a send slot.`);
+  }
+
+  return {
+    // The claimed slot is exactly one spacing interval before the new next-open instant.
+    slotAt: new Date(row.nextSendAt.getTime() - spacingMs),
+    nextSlotAt: row.nextSendAt,
+  };
 }
 
 export function linkedinModeFromEnv(mode: LinkedinMode): LinkedinMode {

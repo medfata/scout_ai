@@ -295,6 +295,8 @@ export const messages = pgTable(
     followUpAfter?: string;
     referral?: ReferralDetails;
   }>(),
+    /** Set when the reply workflow has fully handled this inbound message (review item 16). */
+    replyHandledAt: now("reply_handled_at"),
     /** Set when an LLM output failed schema validation twice (section 10 rule 5). */
     needsOwner: boolean("needs_owner").default(false).notNull(),
     model: text("model"),
@@ -330,6 +332,10 @@ export const connectedAccounts = pgTable(
     warmupStartedAt: now("warmup_started_at"),
     status: text("status").$type<AccountStatus>().default("ok").notNull(),
     statusDetail: text("status_detail"),
+    /** Gmail: the `historyId` the last successful ingest advanced to (review item 13). */
+    lastHistoryId: text("last_history_id"),
+    /** Per-mailbox pacing: the earliest instant the next send may leave this account (item 11). */
+    nextSendAt: now("next_send_at"),
     /** AES-256-GCM with ENCRYPTION_KEY (section 8). Never logged. */
     credentialsEncrypted: text("credentials_encrypted"),
     createdAt: createdAt(),
@@ -374,8 +380,9 @@ export const suppressions = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    uniqueIndex("suppressions_kind_value_unique").on(t.kind, t.value),
-    index("suppressions_kind_hash_idx").on(t.kind, t.valueHash),
+    // Review item 19: matching is by `value_hash` so phase 8 can null the plaintext without
+    // un-suppressing anyone. The hash is an HMAC keyed with ENCRYPTION_KEY (see D11).
+    uniqueIndex("suppressions_kind_hash_unique").on(t.kind, t.valueHash),
   ],
 );
 

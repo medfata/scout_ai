@@ -96,15 +96,26 @@ export interface StepEligibility {
  * `linkedinAutomationEnabled` is false in v1 (section 0 locks LinkedIn to assisted mode),
  * and the assisted task queue arrives in phase 6. Until then LinkedIn steps report
  * `linkedin_not_available` rather than silently disappearing.
+ *
+ * `hasSentAnchor` and `requiresConsent` come from the caller, which reads the enrollment's
+ * sent messages and the settings' consent list. Both are review findings:
+ *   - a `thread: "same"` follow-up must never be drafted for a lead who was never contacted
+ *     (item 4);
+ *   - section 9 excludes countries that require a form of consent from cold email (item 17).
  */
 export function resolveStepEligibility(
   step: SequenceStep,
   lead: LeadContext,
-  options: { linkedinAutomationEnabled: boolean; now: Date },
+  options: { linkedinAutomationEnabled: boolean; now: Date; hasSentAnchor?: boolean; requiresConsent?: boolean },
 ): StepEligibility {
   if (step.channel === "email") {
     if (!lead.email) return { eligible: false, reason: "no_valid_email" };
     if (!isEmailSendable(lead.emailStatus)) return { eligible: false, reason: "no_valid_email" };
+    if (options.requiresConsent) return { eligible: false, reason: "requires_consent" };
+    // A follow-up in the same thread needs a thread to follow.
+    if (step.thread === "same" && options.hasSentAnchor === false) {
+      return { eligible: false, reason: "step_abandoned" };
+    }
     return { eligible: true };
   }
 

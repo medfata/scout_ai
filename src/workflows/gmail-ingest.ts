@@ -26,6 +26,11 @@ async function ingestStep(historyId: string): Promise<GmailIngestResult> {
   return ingestGmailHistory(historyId);
 }
 
+/**
+ * Review item 16: `start()` from inside a step is supported, but a step retries, so this
+ * loop can enqueue the same message twice. That is safe: `replyWorkflow` claims the
+ * message atomically before classifying it, and a losing run is a no-op.
+ */
 async function startReplyRunsStep(messageIds: string[]): Promise<string[]> {
   "use step";
 

@@ -17,6 +17,13 @@ export interface OutboundMessage {
   /** RFC 5322 Message-ID of the message being replied to. */
   inReplyTo: string | null;
   references: string[];
+  /**
+   * The Message-ID this send must use. The send guard derives it from the idempotency key
+   * and stores it before calling the provider, so an ambiguous failure (timeout, reset) can
+   * be reconciled with `rfc822msgid:` instead of risking a double send (review item 8).
+   * Adapters may fall back to generating one when called directly.
+   */
+  rfcMessageId?: string | null;
   /** Display name for the From header. */
   fromName?: string;
   /** Section 7: with DRY_RUN, every send is rewritten to this address and tagged as a test. */

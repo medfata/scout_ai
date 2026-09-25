@@ -109,6 +109,8 @@ export class QuotaExceededError extends ScoutError {
 
 /** The ordered send guard rules from section 7. */
 export type SendGuardRule =
+  /** Rule 0 (review item 18): signature or postal address missing — nothing may send. */
+  | "config_incomplete"
   | "kill_switch"
   | "enrollment_status"
   | "suppressed"
@@ -116,7 +118,9 @@ export type SendGuardRule =
   | "daily_cap"
   | "sending_window"
   | "not_approved"
-  | "idempotency";
+  | "idempotency"
+  /** Review item 21: DRY_RUN is on but there is nowhere safe to redirect to. */
+  | "dry_run_unconfigured";
 
 export class SendGuardError extends ScoutError {
   constructor(

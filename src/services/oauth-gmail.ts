@@ -8,6 +8,7 @@ import { hashValue, secureCompare } from "@/src/lib/crypto";
 import { ConfigurationError } from "@/src/lib/errors";
 import { getEnv } from "@/src/lib/env";
 import { getAccount, markAccountWarmupStart, upsertAccount } from "./accounts";
+import { renewGmailWatch } from "./gmail-watch";
 
 /**
  * Section 8: "the only connected account is one Google Workspace mailbox, linked through
@@ -140,9 +141,15 @@ export async function saveGmailAccount(result: GmailOAuthResult): Promise<Connec
   // reset the mailbox's sending history, and resetting the ramp would drop the caps.
   if (!account.warmupStartedAt) {
     await markAccountWarmupStart(account.id);
-    return (await getAccount(account.id)) ?? account;
   }
-  return account;
+
+  // Review item 13: replies arrive through a Pub/Sub watch registered per mailbox, and
+  // Google expires it after seven days. Registering it here means a freshly connected
+  // mailbox is watched immediately; the daily planner renews it. `renewGmailWatch` never
+  // throws, so a missing topic or a Google hiccup cannot fail the OAuth callback.
+  await renewGmailWatch({ accountId: account.id });
+
+  return (await getAccount(account.id)) ?? account;
 }
 
 function readEnv(): ReturnType<typeof getEnv> | null {

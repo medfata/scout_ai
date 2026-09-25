@@ -12,13 +12,13 @@ import {
   type Offer,
 } from "@/src/db/schema";
 import { pickAngle } from "@/src/domain/scoring";
-import { getSequence, getStep } from "@/src/domain/sequence";
+import { getSequence, getStep, type SequenceStep } from "@/src/domain/sequence";
 import type { ChannelKind } from "@/src/domain/types";
 import { QuotaExceededError } from "@/src/lib/errors";
 import { idempotencyKey } from "@/src/lib/ids";
 import { logger } from "@/src/lib/logger";
 import { recordActivity } from "./activity";
-import { getEnrollment, transitionEnrollment } from "./enrollment";
+import { activateEnrollment, getEnrollment, transitionEnrollment } from "./enrollment";
 import { getLead, getLatestLeadScore, getResearchBrief } from "./leads";
 import {
   createDraft,
@@ -155,16 +155,21 @@ export async function draftEnrollmentStep(input: DraftEnrollmentStepInput): Prom
     );
 
     if (!result.draft) {
-      // The model could not produce a parsable draft twice (section 10 rule 5). Nothing
-      // is persisted; the owner sees the contact flagged in the audit log.
-      await recordActivity({
-        actor: "ai",
-        entityType: "enrollment",
-        entityId: enrollment.id,
-        type: "draft.needs_owner",
-        data: { step: input.step, channel: step.channel, reason: "validation" },
+      // Section 10 rule 5: the model could not produce a parsable draft twice, so the
+      // item is marked "needs owner". Review item 5: the sequencer must wait on the
+      // approval hook for this step instead of skipping it — a skipped step would move
+      // the sequence past the first touch and leave a follow-up with no thread.
+      const message = await persistNeedsOwnerStub({
+        enrollment,
+        step,
+        stepIndex: input.step,
+        model: result.model,
+        promptVersion: result.promptVersion,
+        costUsd: result.costUsd,
+        attempts: result.attempts,
+        reason: "validation",
       });
-      return { ok: false, reason: "validation", message: "The draft model failed schema validation twice." };
+      return { ok: true, message, enrollment, skipped: false, result };
     }
 
     const draftInput: CreateDraftInput = {
@@ -229,19 +234,29 @@ export async function draftEnrollmentStep(input: DraftEnrollmentStepInput): Prom
         reason: `autonomy:${settings.autonomyLevel}`,
         patch: { startedAt: new Date() },
       });
+      // Review item 1: approving step 0 is what starts the durable sequence run. The
+      // claim inside `activateEnrollment` makes this idempotent if the owner approved
+      // from the inbox at the same moment.
+      await activateEnrollment(enrollment.id);
     }
 
     return { ok: true, message, enrollment: currentEnrollment, skipped: false, result };
   } catch (error) {
     if (error instanceof LlmValidationError) {
-      await recordActivity({
-        actor: "ai",
-        entityType: "enrollment",
-        entityId: enrollment.id,
-        type: "draft.needs_owner",
-        data: { step: input.step, channel: step.channel, reason: "validation" },
+      // The revision loop normally absorbs schema failures, so reaching this branch means
+      // the model call itself threw. Same treatment as `!result.draft`: a needs-owner row
+      // the sequencer can wait on (review item 5), never a silent skip.
+      const message = await persistNeedsOwnerStub({
+        enrollment,
+        step,
+        stepIndex: input.step,
+        model: null,
+        promptVersion: null,
+        costUsd: 0,
+        attempts: 0,
+        reason: "model_error",
       });
-      return { ok: false, reason: "validation", message: error.message };
+      return { ok: true, message, enrollment, skipped: false, result: null };
     }
     if (error instanceof QuotaExceededError) {
       logger.warn("drafting.quota_exceeded", { enrollmentId: enrollment.id, reason: error.message });
@@ -249,6 +264,77 @@ export async function draftEnrollmentStep(input: DraftEnrollmentStepInput): Prom
     }
     throw error;
   }
+}
+
+interface NeedsOwnerStubInput {
+  enrollment: Enrollment;
+  step: SequenceStep;
+  stepIndex: number;
+  model: string | null;
+  promptVersion: string | null;
+  costUsd: number;
+  attempts: number;
+  reason: "validation" | "model_error";
+}
+
+/**
+ * Review item 5: an LLM that fails validation twice leaves a `needs_owner` message
+ * waiting in the approval inbox, and the sequencer waits on the approval hook for the
+ * same step. The body is empty on purpose — approving it unchanged is blocked by
+ * `approveDraftMessage` until the owner writes something.
+ */
+async function persistNeedsOwnerStub(input: NeedsOwnerStubInput): Promise<Message> {
+  const message = await createDraft({
+    enrollmentId: input.enrollment.id,
+    contactId: input.enrollment.contactId,
+    channel: input.step.channel,
+    step: input.stepIndex,
+    stepKey: input.step.key,
+    subject: null,
+    body: "",
+    status: "pending_approval",
+    model: input.model,
+    promptVersion: input.promptVersion,
+    costUsd: input.costUsd,
+    needsOwner: true,
+  });
+
+  if (input.costUsd > 0) {
+    await recordAiCall({
+      component: "copy",
+      model: input.model ?? "",
+      promptVersion: input.promptVersion ?? undefined,
+      costUsd: input.costUsd,
+      contactId: input.enrollment.contactId,
+    });
+  }
+
+  await recordActivity({
+    actor: "ai",
+    entityType: "message",
+    entityId: message.id,
+    type: "draft.needs_owner",
+    data: {
+      enrollmentId: input.enrollment.id,
+      contactId: input.enrollment.contactId,
+      step: input.stepIndex,
+      channel: input.step.channel,
+      status: "pending_approval",
+      attempts: input.attempts,
+      promptVersion: input.promptVersion,
+      model: input.model,
+      passed: false,
+      criticPassed: false,
+      fix: null,
+      violations: [],
+      claims: [],
+      angle: input.enrollment.angle ?? "",
+      cta: "",
+      reason: input.reason,
+    },
+  });
+
+  return message;
 }
 
 /**

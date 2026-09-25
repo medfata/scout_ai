@@ -11,6 +11,7 @@ import {
   researchBriefs,
 } from "@/src/db/schema";
 import { buildSignature, evaluateCopyRules, type Violation } from "@/src/domain/copy-rules";
+import { isLive } from "@/src/domain/enrollment";
 import { charLimitForStep, getSequence, getStep, wordLimitForStep } from "@/src/domain/sequence";
 import { listApprovalQueue } from "@/src/services/messages";
 import { getSettings } from "@/src/services/settings";
@@ -24,12 +25,16 @@ import type { InboxRow, InboxSignal, InboxViolation } from "@/components/inbox/t
 
 export async function loadInboxRows(limit = 100): Promise<InboxRow[]> {
   const queue = await listApprovalQueue(limit);
-  if (queue.length === 0) return [];
+  // Review item 3: the enrollment row is the authority on whether a draft is still in
+  // play. A message left behind by a replied, stopped, completed or skipped enrollment
+  // must never look approvable in the inbox.
+  const liveQueue = queue.filter((row) => isLive(row.enrollment.status));
+  if (liveQueue.length === 0) return [];
 
   const db = getDb();
-  const messageIds = queue.map((row) => row.message.id);
-  const contactIds = unique(queue.map((row) => row.message.contactId));
-  const icpIds = unique(queue.map((row) => row.enrollment.icpId));
+  const messageIds = liveQueue.map((row) => row.message.id);
+  const contactIds = unique(liveQueue.map((row) => row.message.contactId));
+  const icpIds = unique(liveQueue.map((row) => row.enrollment.icpId));
 
   const [companiesByContact, briefs, scores, icpRows, verdicts, settings] = await Promise.all([
     loadCompaniesForContacts(contactIds),
@@ -48,7 +53,7 @@ export async function loadInboxRows(limit = 100): Promise<InboxRow[]> {
   const briefsByContact = new Map(briefs.map((brief) => [brief.contactId, brief]));
   const signature = buildSignature(settings.signature, settings.postalAddress);
 
-  return queue.map((row) => {
+  return liveQueue.map((row) => {
     const { message, enrollment } = row;
     const icp = icpsById.get(enrollment.icpId) ?? null;
     const offer = icp ? offersById.get(icp.offerId) ?? null : null;

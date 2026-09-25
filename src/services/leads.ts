@@ -13,15 +13,18 @@ import {
 } from "@/src/db/schema";
 import {
   advanceStage,
-  isSuppressed,
+  isFreemailDomain,
   normalizeDomain,
   normalizeEmail,
   normalizeLinkedin,
   normalizeSuppressionValue,
+  suppressionCandidatesFor,
   type SuppressionEntry,
+  type SuppressionTarget,
 } from "@/src/domain";
 import type { ContactStage, EmailStatus, LeadContext, SizeBand, SuppressionKind } from "@/src/domain/types";
 import { hashValue } from "@/src/lib/crypto";
+import { logger } from "@/src/lib/logger";
 import { recordActivity } from "./activity";
 
 /**
@@ -186,25 +189,64 @@ export interface AddSuppressionInput {
   source?: string;
 }
 
-export async function loadSuppressionEntries(): Promise<SuppressionEntry[]> {
+/**
+ * Review item 19: match `(kind, value_hash)` over exactly the four lookups a lead can
+ * hit — email, the email's domain, the company domain and the LinkedIn URL. The unique
+ * index on `(kind, value_hash)` serves the query, and `value` is selected for display
+ * only: phase 8 nulls it and matching keeps working because only the hash is compared.
+ *
+ * `loadSuppressionEntries` now takes the target; the whole suppression table is never
+ * read into memory.
+ */
+export async function loadSuppressionEntries(target: SuppressionTarget): Promise<SuppressionEntry[]> {
+  const where = suppressionMatchWhere(target);
+  if (!where) return [];
   const db = getDb();
   return db
     .select({ kind: suppressions.kind, value: suppressions.value, valueHash: suppressions.valueHash })
-    .from(suppressions);
+    .from(suppressions)
+    .where(where);
 }
 
-export async function isContactSuppressed(target: {
-  email: string | null;
-  companyDomain: string | null;
-  linkedinUrl: string | null;
-}): Promise<boolean> {
-  const entries = await loadSuppressionEntries();
-  return isSuppressed(target, entries);
+export async function isContactSuppressed(target: SuppressionTarget): Promise<boolean> {
+  const where = suppressionMatchWhere(target);
+  if (!where) return false;
+  const db = getDb();
+  const [row] = await db.select({ kind: suppressions.kind }).from(suppressions).where(where).limit(1);
+  return Boolean(row);
+}
+
+function suppressionMatchWhere(target: SuppressionTarget) {
+  const candidates = suppressionCandidatesFor(target);
+  if (candidates.length === 0) return null;
+  return or(
+    ...candidates.map((candidate) =>
+      and(eq(suppressions.kind, candidate.kind), eq(suppressions.valueHash, hashValue(candidate.kind, candidate.value))),
+    ),
+  );
 }
 
 export async function addSuppression(input: AddSuppressionInput, tx?: Transaction): Promise<{ created: boolean }> {
   const db = tx ?? getDb();
   const value = normalizeSuppressionValue(input.kind, input.value);
+
+  // Review item 20 / section 10 decision rule 3: domain suppression on a bounce was
+  // invented. A hard bounce says the address is dead, not the whole company, so it is
+  // email-only. Enforced here — the single suppression write path — so a caller that
+  // still asks for it cannot damage every other lead at the domain.
+  if (input.kind === "domain" && input.reason.toLowerCase().includes("bounce")) {
+    logger.warn("suppression.bounce_domain_refused", { reason: input.reason, source: input.source ?? "scout" });
+    return { created: false };
+  }
+
+  // Review item 20: a domain suppression on a consumer mailbox (gmail.com, outlook.com,
+  // ...) blocks every contact on that provider, not the one lead the owner meant. The
+  // email and LinkedIn suppressions still stop this person.
+  if (input.kind === "domain" && isFreemailDomain(value)) {
+    logger.warn("suppression.freemail_domain_refused", { reason: input.reason, source: input.source ?? "scout" });
+    return { created: false };
+  }
+
   const valueHash = hashValue(input.kind, value);
 
   const [row] = await db

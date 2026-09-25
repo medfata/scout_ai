@@ -250,7 +250,9 @@ export type SkipReason =
   | "step_abandoned"
   | "linkedin_not_available"
   | "lead_replied"
-  | "quota_exhausted";
+  | "quota_exhausted"
+  /** Section 9: a country that requires a form of consent for cold email (review item 17). */
+  | "requires_consent";
 
 export interface LeadContext {
   contactId: string;

@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/src/db/client";
 import { sendCounters } from "@/src/db/schema";
-import { dateOnlyInZone } from "@/src/lib/time-windows";
+import { dateOnlyInZone, instantForDateOnly } from "@/src/lib/time-windows";
 import { QuotaExceededError } from "@/src/lib/errors";
 import { getEnv } from "@/src/lib/env";
 import { getSettings } from "./settings";
@@ -26,6 +26,18 @@ function startOfDay(now: Date, timeZone: string): Date {
 
 function startOfMonth(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+}
+
+/**
+ * Review item 12: when the daily cap blocks a send, the retry belongs at the start of the
+ * next counter day in the owner's timezone — not "now plus twelve hours", which could land
+ * in the same counter day or in the middle of the night.
+ */
+export function nextCounterDayStart(now: Date, timeZone: string): Date {
+  const today = dateOnlyInZone(now, timeZone);
+  const tomorrow = new Date(`${today}T00:00:00Z`);
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  return instantForDateOnly(tomorrow.toISOString().slice(0, 10), "00:05", timeZone);
 }
 
 // ---------------------------------------------------------------------------

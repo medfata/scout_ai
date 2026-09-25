@@ -28,7 +28,12 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://scout:scout@localhost:5432/scout_ci
+      # Review item 21: DRY_RUN=true is refused without a redirect address, and these two
+      # model ids are required core vars (section 4: ids live in env, never hard-coded).
       DRY_RUN: "true"
+      DRY_RUN_REDIRECT_EMAIL: scout-ci@example.com
+      MODEL_COPY: test/model-copy
+      MODEL_RESEARCH: test-model-research
     steps:
       - uses: actions/checkout@v5
 

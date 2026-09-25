@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 
 import { getDb } from "@/src/db/client";
 import { settings, type Settings } from "@/src/db/schema";
-import { defaultSettings, type SettingsValues } from "@/src/domain";
+import { defaultSettings, normalizeRequiresConsentGeos, requiresConsentForCountry, type SettingsValues } from "@/src/domain";
 import { getEnv } from "@/src/lib/env";
 import { isValidTimeZone } from "@/src/lib/time-windows";
 import { recordActivity } from "./activity";
@@ -48,6 +48,11 @@ export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
     throw new Error(`"${patch.timezone}" is not a valid IANA timezone.`);
   }
 
+  // Review item 17: store the consent list as ISO 3166-1 alpha-2 codes. An unrecognised
+  // entry throws here rather than being dropped silently.
+  const requiresConsentGeos =
+    patch.requiresConsentGeos !== undefined ? normalizeRequiresConsentGeos(patch.requiresConsentGeos) : undefined;
+
   const db = getDb();
   const [updated] = await db
     .update(settings)
@@ -58,7 +63,7 @@ export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
       ...(patch.autonomyLevel !== undefined ? { autonomyLevel: patch.autonomyLevel } : {}),
       ...(patch.signature !== undefined ? { signature: patch.signature } : {}),
       ...(patch.postalAddress !== undefined ? { postalAddress: patch.postalAddress } : {}),
-      ...(patch.requiresConsentGeos !== undefined ? { requiresConsentGeos: patch.requiresConsentGeos } : {}),
+      ...(requiresConsentGeos !== undefined ? { requiresConsentGeos } : {}),
       ...(patch.killSwitch !== undefined ? { killSwitch: patch.killSwitch } : {}),
       ...(patch.dailyNewProspectTarget !== undefined ? { dailyNewProspectTarget: patch.dailyNewProspectTarget } : {}),
       updatedAt: new Date(),
@@ -85,4 +90,17 @@ export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
 export async function isKillSwitchOn(): Promise<boolean> {
   const row = await getSettings();
   return row.killSwitch;
+}
+
+/**
+ * Review item 17: the lookup that decides `resolveStepEligibility`'s `requiresConsent`
+ * flag, which in turn makes every email step for this lead ineligible (`requires_consent`).
+ *
+ * Callers pass the contact's company country (`company.country`): section 9 excludes
+ * countries that require a form of consent for cold email. Both the company record and the
+ * stored list are normalised, so names and ISO codes compare correctly.
+ */
+export async function countryRequiresConsent(companyCountry: string | null | undefined): Promise<boolean> {
+  const row = await getSettings();
+  return requiresConsentForCountry(companyCountry, row.requiresConsentGeos);
 }

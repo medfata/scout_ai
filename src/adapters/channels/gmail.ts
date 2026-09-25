@@ -57,6 +57,25 @@ export interface GmailMailbox {
 }
 
 /**
+ * Review item 8: reconciliation. A message that Gmail accepted but Scout never recorded
+ * is found again by its deterministic Message-ID, then marked `sent` from this result.
+ */
+export interface ReconciledSend {
+  providerMessageId: string;
+  threadId: string | null;
+  sentAt: Date;
+}
+
+/**
+ * A channel that can look a send up by RFC 5322 Message-ID. The send guard narrows to this
+ * interface before it reconciles a message stuck in `sending`; a channel without it can
+ * never be retried blindly.
+ */
+export interface ReconcilableChannel extends Channel {
+  findSentByRfcMessageId(rfcMessageId: string): Promise<ReconciledSend | null>;
+}
+
+/**
  * Everything the adapter touches outside its own process: the mailbox row, the OAuth
  * client and the "pause and alert" path. Tests inject all four, so no Google call and
  * no database access happens in a test.
@@ -74,7 +93,7 @@ export type GmailChannelOptions = Partial<GmailChannelDeps>;
 
 type ResolvedDeps = GmailChannelDeps & { now: () => Date };
 
-export function createGmailChannel(options: GmailChannelOptions = {}): Channel | null {
+export function createGmailChannel(options: GmailChannelOptions = {}): ReconcilableChannel | null {
   const deps = resolveDeps(options);
   if (!deps) return null;
   return new GmailChannel(deps);
@@ -84,7 +103,7 @@ export function createGmailChannel(options: GmailChannelOptions = {}): Channel |
 // Channel
 // ---------------------------------------------------------------------------
 
-class GmailChannel implements Channel {
+class GmailChannel implements ReconcilableChannel {
   readonly kind = "email" as const;
   readonly name = "gmail";
 
@@ -103,7 +122,10 @@ class GmailChannel implements Channel {
     client.setCredentials({ access_token: accessToken });
 
     const now = this.deps.now();
-    const rfcMessageId = buildMessageId(mailbox.handle);
+    // Review item 8: the guard passes the id derived from the idempotency key so it can be
+    // stored before the provider call. The random id is only the fallback for direct
+    // adapter calls (tests, future callers) that have no idempotency key.
+    const rfcMessageId = rfcMessageIdOf(message) ?? buildMessageId(mailbox.handle);
     const raw = buildRfc5322Message({
       from: mailbox.handle,
       fromName: message.fromName ?? null,
@@ -146,7 +168,52 @@ class GmailChannel implements Channel {
         redirected: Boolean(message.dryRunRedirect && message.to === message.dryRunRedirect),
       };
     } catch (error) {
-      throw await this.classifySendFailure(mailbox, error);
+      throw await this.classifyFailure(mailbox, error, "send");
+    }
+  }
+
+  /**
+   * Review item 8: was this exact message accepted by Gmail, even though Scout never
+   * recorded it? `rfc822msgid:` is Gmail's own search operator for the Message-ID header,
+   * so the lookup is exact and sender-scoped (`userId: "me"`).
+   *
+   * The list endpoint returns ids only, so the internal date (and thread id, when present)
+   * comes from a minimal `messages.get`. Both calls are read-only.
+   */
+  async findSentByRfcMessageId(rfcMessageId: string): Promise<ReconciledSend | null> {
+    const mailbox = await this.deps.loadMailbox();
+    if (!mailbox) {
+      throw new ConfigurationError(
+        "No sending mailbox is connected. Connect one under Settings → Connected accounts before reconciling.",
+      );
+    }
+
+    const client = this.deps.createOAuthClient();
+    const accessToken = await this.ensureAccessToken(mailbox, client);
+    client.setCredentials({ access_token: accessToken });
+
+    const gmail = google.gmail({ version: GMAIL_API_VERSION, auth: client });
+
+    try {
+      const listed = await gmail.users.messages.list({
+        userId: "me",
+        q: `rfc822msgid:${searchableMessageId(rfcMessageId)}`,
+        maxResults: 1,
+      });
+
+      const found = listed.data.messages?.[0];
+      if (!found?.id) return null;
+
+      const detail = await gmail.users.messages.get({ userId: "me", id: found.id, format: "minimal" });
+      const internalDate = detail.data.internalDate ? Number(detail.data.internalDate) : Number.NaN;
+
+      return {
+        providerMessageId: found.id,
+        threadId: detail.data.threadId ?? found.threadId ?? null,
+        sentAt: Number.isFinite(internalDate) ? new Date(internalDate) : this.deps.now(),
+      };
+    } catch (error) {
+      throw await this.classifyFailure(mailbox, error, "lookup");
     }
   }
 
@@ -155,11 +222,11 @@ class GmailChannel implements Channel {
    * alerts the owner with a Reconnect button." Failures to authenticate are failures of
    * the stored credentials, so the mailbox is paused here before the error propagates.
    */
-  private async classifySendFailure(mailbox: GmailMailbox, error: unknown): Promise<VendorError> {
+  private async classifyFailure(mailbox: GmailMailbox, error: unknown, action: "send" | "lookup"): Promise<VendorError> {
     if (error instanceof VendorError) return error;
 
     const status = httpStatusOf(error);
-    logger.warn("gmail.send_failed", { accountId: mailbox.id, status });
+    logger.warn(action === "send" ? "gmail.send_failed" : "gmail.lookup_failed", { accountId: mailbox.id, status });
 
     if (status === 401 || status === 403) {
       const detail = "Google rejected the mailbox credentials. Reconnect the mailbox.";
@@ -167,7 +234,7 @@ class GmailChannel implements Channel {
       return new VendorError("gmail", detail, { code: "vendor_auth", status, cause: error });
     }
     if (status === 429) {
-      return new VendorError("gmail", "Gmail rate limited the send.", {
+      return new VendorError("gmail", `Gmail rate limited the ${action}.`, {
         code: "vendor_rate_limited",
         status,
         retryable: true,
@@ -175,7 +242,7 @@ class GmailChannel implements Channel {
       });
     }
     if (status !== null && status >= 500) {
-      return new VendorError("gmail", `Gmail returned ${status}.`, {
+      return new VendorError("gmail", `Gmail returned ${status} during ${action}.`, {
         code: "vendor_unavailable",
         status,
         retryable: true,
@@ -183,13 +250,13 @@ class GmailChannel implements Channel {
       });
     }
     if (status !== null) {
-      return new VendorError("gmail", `Gmail rejected the message (${status}).`, {
+      return new VendorError("gmail", `Gmail rejected the ${action} (${status}).`, {
         code: "vendor_bad_request",
         status,
         cause: error,
       });
     }
-    return new VendorError("gmail", "Gmail could not be reached.", {
+    return new VendorError("gmail", `Gmail could not be reached during ${action}.`, {
       code: "vendor_unavailable",
       retryable: true,
       cause: error,
@@ -372,9 +439,28 @@ export function buildRfc5322Message(input: Rfc5322Input): string {
 }
 
 export function buildMessageId(handle: string): string {
+  return `<${randomUUID()}@${senderDomainFrom(handle)}>`;
+}
+
+/** The domain half of a mailbox address, safe to put in a Message-ID. */
+export function senderDomainFrom(handle: string): string {
   const domain = handle.includes("@") ? handle.slice(handle.lastIndexOf("@") + 1) : "";
-  const safeDomain = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i.test(domain) ? domain : "scout.local";
-  return `<${randomUUID()}@${safeDomain}>`;
+  return /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i.test(domain) ? domain : "scout.local";
+}
+
+/**
+ * Review item 8: the send guard passes the deterministic Message-ID on the outbound
+ * message. The port (`OutboundMessage`) does not declare it yet, so it is read
+ * structurally and falls back to the random id for direct adapter callers.
+ */
+function rfcMessageIdOf(message: OutboundMessage): string | null {
+  const candidate = (message as OutboundMessage & { rfcMessageId?: unknown }).rfcMessageId;
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+}
+
+/** Gmail's `rfc822msgid:` operator matches the bare id, without the angle brackets. */
+function searchableMessageId(rfcMessageId: string): string {
+  return rfcMessageId.replace(/[<>]/g, "").trim();
 }
 
 export function toBase64Url(raw: string): string {
